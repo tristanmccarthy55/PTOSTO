@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dir \"c:\\\\Users\\\\Trist\\\\HyperSpy-bundle\\\\MY HYPERSPY CODE\\\\PTOSTO\")",
+      "Bash(dir \"c:\\\\Users\\\\Trist\\\\HyperSpy-bundle\\\\MY HYPERSPY CODE\")",
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:abtem.readthedocs.io)",
+      "WebFetch(domain:pelzlab.science)",
+      "WebFetch(domain:www.nature.com)",
+      "WebFetch(domain:arxiv.org)",
+      "Bash(python diagnostics.py --only 0e)"
+    ]
+  }
+}
