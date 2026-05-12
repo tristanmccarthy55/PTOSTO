@@ -146,19 +146,39 @@ def track_pb_columns(phase_zyx: np.ndarray, *, threshold_factor: float = 0.6,
     return out
 
 
-def run(p: P.Params, recon_path: Path) -> dict:
+def run(p: P.Params, recon_path: Path, *, mode: str = "production") -> dict:
+    """
+    mode: "production" (full 9-tile, std ratio >= 2.0) |
+          "mini" (4-tile, std ratio >= 1.3, just check depth structure exists) |
+          "toy" (single tile, code-path only — quality criteria all advisory).
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     z = _open_recon(recon_path)
     phase = np.asarray(z["object_phase"][:])
-    print(f"Loaded {recon_path.name} | object_phase {phase.shape}")
+    print(f"Loaded {recon_path.name} | object_phase {phase.shape}  [mode={mode}]")
+
+    # Threshold table per mode.
+    std_thresh = {"production": 2.0, "mini": 1.3, "toy": 1.0}[mode]
+    kz_thresh = {"production": 0.05, "mini": 0.02, "toy": 0.0}[mode]
 
     summary: dict = {
         "recon_path": str(recon_path),
         "shape": list(phase.shape),
+        "mode": mode,
+        "nan_fraction": float(np.isnan(phase).sum()) / phase.size,
     }
+
+    # Code-path gate: zero NaN. This is the absolute minimum.
+    if summary["nan_fraction"] > 0:
+        print(f"  CRITICAL: {summary['nan_fraction']*100:.1f}% NaN in object_phase  "
+              f"(code-path FAIL — reconstruction diverged)")
+        summary["pass_code_path"] = False
+        return summary
+    summary["pass_code_path"] = True
+    print(f"  code-path: PASS (no NaN, finite values)")
 
     # Pass 1: per-slice std (depth contrast).
     std_z = phase.std(axis=tuple(range(1, phase.ndim)))
@@ -166,9 +186,9 @@ def run(p: P.Params, recon_path: Path) -> dict:
     summary["per_slice_std_min"] = float(std_z.min())
     summary["per_slice_std_max"] = float(std_z.max())
     summary["per_slice_std_ratio"] = contrast_ratio
-    summary["pass_per_slice_std"] = bool(contrast_ratio >= 2.0)
+    summary["pass_per_slice_std"] = bool(contrast_ratio >= std_thresh)
     print(f"  per-slice std min/max ratio = {contrast_ratio:.2f}  "
-          f"({'PASS' if contrast_ratio >= 2.0 else 'FAIL'} -- want >= 2.0)")
+          f"({'PASS' if contrast_ratio >= std_thresh else 'FAIL'} -- want >= {std_thresh})")
 
     # Pass 2: depth-direction FRC.
     kz, frc = _kz_frc(phase)
@@ -176,9 +196,10 @@ def run(p: P.Params, recon_path: Path) -> dict:
     low_kz = float(np.abs(frc[len(frc) // 2]))
     summary["kz_frc_lowf"] = low_kz
     summary["kz_frc_highf_avg"] = high_kz_avg
-    summary["pass_kz_frc"] = bool(low_kz > 1e-6 and (high_kz_avg / max(low_kz, 1e-12)) > 0.05)
+    summary["pass_kz_frc"] = bool(low_kz > 1e-6
+                                   and (high_kz_avg / max(low_kz, 1e-12)) > kz_thresh)
     print(f"  kz FRC mid={low_kz:.3g}, high-kz avg={high_kz_avg:.3g}  "
-          f"({'PASS' if summary['pass_kz_frc'] else 'FAIL'})")
+          f"({'PASS' if summary['pass_kz_frc'] else 'FAIL'} -- want ratio > {kz_thresh})")
 
     # Pass 3: column tracking (writes CSV; no automatic pass/fail).
     out_csv = recon_path.parent / (recon_path.stem + "_columns.csv")
@@ -213,14 +234,28 @@ def main(argv=None) -> int:
         pass
     ap = argparse.ArgumentParser()
     ap.add_argument("--recon", type=Path, default=None,
-                    help="Recon zarr path; default ptycho_recon.zarr or _toy.")
+                    help="Recon zarr path; default chosen from --toy / --mini flags.")
     ap.add_argument("--toy", action="store_true")
+    ap.add_argument("--mini", action="store_true")
     args = ap.parse_args(argv)
 
-    p = P.toy_params() if args.toy else P.derive()
-    recon_path = args.recon or (P.PROJECT_ROOT /
-                                ("ptycho_recon_toy.zarr" if args.toy else "ptycho_recon.zarr"))
-    run(p, recon_path)
+    if args.toy and args.mini:
+        ap.error("Pass --toy OR --mini, not both.")
+
+    p = P.toy_params() if (args.toy or args.mini) else P.derive()
+
+    if args.mini:
+        mode = "mini"
+        default_zarr = "ptycho_recon_mini.zarr"
+    elif args.toy:
+        mode = "toy"
+        default_zarr = "ptycho_recon_toy.zarr"
+    else:
+        mode = "production"
+        default_zarr = "ptycho_recon.zarr"
+
+    recon_path = args.recon or (P.PROJECT_ROOT / default_zarr)
+    run(p, recon_path, mode=mode)
     return 0
 
 

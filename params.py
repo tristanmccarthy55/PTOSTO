@@ -24,7 +24,9 @@ CONVERGENCE_MRAD: float = 100.0
 OVERFOCUS_NM: float = 1.0  # positive = probe focused before sample (overfocus)
 
 HAADF_INNER_MRAD: float = 110.0
-HAADF_OUTER_MRAD: float = 250.0
+# 185 mrad is safely within the ~197 mrad simulated angular range (grid-limited
+# by the 0.05 Å sampling floor on the 47.88 Å cell). 250 mrad would exceed it.
+HAADF_OUTER_MRAD: float = 185.0
 
 # Detector: outer angle and target detector array size are derived in
 # diagnostics.py (Phase 0e). Defaults below are the picked config for 8 GB VRAM.

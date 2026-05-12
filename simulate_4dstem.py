@@ -95,8 +95,13 @@ def _build_potential(atoms, p: P.Params, num_configs: int):
 def _build_probe(p: P.Params, potential):
     """Probe with the matched grid and the **correct** abTEM defocus sign.
 
-    abTEM ``defocus = +Δf`` => focus moves up into the potential. To focus the
-    probe 10 Å above the sample (overfocus), pass +overfocus_a.
+    Verified empirically (test_probe_focus.py) and from abtem/transfer.py:
+    abTEM ``defocus = -C10``; a *negative* defocus puts the crossover *above*
+    the entrance plane (in the source-side vacuum) — i.e. the probe is focused
+    BEFORE it enters the sample = OVERFOCUS. ``defocus = +OVERFOCUS_A`` would
+    instead focus the probe ~OVERFOCUS_A deep *inside* the crystal (underfocus).
+    So for overfocus we pass ``-overfocus_a``. (This matches the original
+    notebook; the rebuild's earlier ``+overfocus_a`` was the wrong sign.)
     """
     import abtem
     probe = abtem.Probe(
@@ -104,7 +109,7 @@ def _build_probe(p: P.Params, potential):
         semiangle_cutoff=p.convergence_mrad,
         device="gpu",
     )
-    probe.aberrations.defocus = +p.overfocus_a
+    probe.aberrations.defocus = -p.overfocus_a   # negative => overfocus (focus before sample)
     probe.grid.match(potential)
     return probe
 
@@ -146,7 +151,8 @@ def run_single_tile(tile_i: int, tile_j: int, p: P.Params, *,
 
     potential = _build_potential(atoms, p, num_configs=n_cfg)
     probe = _build_probe(p, potential)
-    print(f"Probe: defocus = +{p.overfocus_a:.2f} Å (overfocus); "
+    print(f"Probe: abTEM defocus = {-p.overfocus_a:+.2f} Å "
+          f"(overfocus: crossover {p.overfocus_a:.1f} Å above the sample); "
           f"semiangle = {p.convergence_mrad:.0f} mrad")
 
     tx_start, ty_start, tx_end, ty_end = _tile_bounds(tile_i, tile_j, p)
@@ -156,8 +162,19 @@ def run_single_tile(tile_i: int, tile_j: int, p: P.Params, *,
     print(f"Tile scan: {scan.shape[0]} × {scan.shape[1]} positions, "
           f"({tx_start:.1f},{ty_start:.1f}) -> ({tx_end:.1f},{ty_end:.1f}) Å")
 
+    # Compute the actual simulated angular range from the probe grid so that
+    # the HAADF outer limit never exceeds what abTEM can integrate.
+    gpts = probe.grid.gpts      # (ny, nx) grid points
+    extent = probe.grid.extent  # (Ly, Lx) Å
+    k_max = min((gpts[0] // 2) / extent[0],
+                (gpts[1] // 2) / extent[1])  # Å^-1
+    sim_max_mrad = k_max * p.wavelength_a * 1000.0
+    haadf_outer = min(p.haadf_outer_mrad, sim_max_mrad * 0.97)
+    if haadf_outer < p.haadf_outer_mrad:
+        print(f"  HAADF outer clamped: {p.haadf_outer_mrad:.0f} → "
+              f"{haadf_outer:.1f} mrad  (sim max ≈ {sim_max_mrad:.1f} mrad)")
     det_haadf = abtem.AnnularDetector(inner=p.haadf_inner_mrad,
-                                      outer=p.haadf_outer_mrad)
+                                      outer=haadf_outer)
     det_bf = abtem.PixelatedDetector(max_angle=p.detector_max_angle_mrad)
 
     measurements = probe.scan(potential, scan=scan, detectors=[det_haadf, det_bf])
@@ -223,6 +240,10 @@ def main(argv=None) -> int:
                     help="Run all 9 tiles (0,0)..(2,2) in series.")
     ap.add_argument("--toy", action="store_true",
                     help="Toy config (n_configs=2, slice=2 Å, smaller batch).")
+    ap.add_argument("--mini", action="store_true",
+                    help="Mini gating run: 2x2 tile block (0,0)(0,1)(1,0)(1,1) "
+                         "with toy params. ~4 h sim, gives 8x8 Å scan area "
+                         "for a real ptychography quality check.")
     ap.add_argument("--num-configs", type=int, default=None)
     ap.add_argument("--overwrite", action="store_true")
     ap.add_argument("--out-dir", type=Path, default=None)
@@ -230,18 +251,19 @@ def main(argv=None) -> int:
 
     _setup_cuda_path()
 
-    p = P.toy_params() if args.toy else P.derive()
+    p = P.toy_params() if (args.toy or args.mini) else P.derive()
     print(P.summary(p))
 
-    if args.toy and args.tile is None and not args.all:
-        args.tile = [1, 1]  # default toy tile = centre
-
-    if args.all:
+    if args.mini:
+        tiles = [(0, 0), (0, 1), (1, 0), (1, 1)]
+    elif args.all:
         tiles = [(i, j) for i in range(3) for j in range(3)]
     elif args.tile is not None:
         tiles = [tuple(args.tile)]
+    elif args.toy:
+        tiles = [(1, 1)]   # default toy tile = centre
     else:
-        ap.error("Pass --tile I J or --all (or --toy for the default toy tile).")
+        ap.error("Pass --tile I J, --all, --toy, or --mini.")
 
     t0 = time.time()
     for (i, j) in tiles:

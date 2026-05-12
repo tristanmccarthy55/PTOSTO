@@ -52,6 +52,21 @@ def _setup_cuda_path() -> None:
         pass
 
 
+def _diagnose_object(ptycho, label: str) -> None:
+    """Print NaN / amplitude / phase stats so we can localise divergence."""
+    obj = np.asarray(ptycho.object)
+    nan_frac = float(np.isnan(obj).sum()) / obj.size
+    amp = np.abs(obj)
+    finite_mask = np.isfinite(amp)
+    amp_finite = amp[finite_mask] if finite_mask.any() else np.array([np.nan])
+    phase_finite = np.angle(obj)[finite_mask] if finite_mask.any() else np.array([np.nan])
+    print(f"  [diag {label}] shape={obj.shape} dtype={obj.dtype}  "
+          f"NaN={nan_frac*100:.1f}%  "
+          f"|obj| min/med/max = "
+          f"{amp_finite.min():.3g}/{np.median(amp_finite):.3g}/{amp_finite.max():.3g}  "
+          f"phase min/max = {phase_finite.min():.3g}/{phase_finite.max():.3g}")
+
+
 def load_and_stitch(tile_dir: Path, p: P.Params,
                     tile_pairs: list[tuple[int, int]]) -> tuple[np.ndarray, dict]:
     """Stitch tile BF zarrs into a single (Sy, Sx, Dy, Dx) float32 array.
@@ -80,6 +95,25 @@ def load_and_stitch(tile_dir: Path, p: P.Params,
     Sy, Sx = tile_shape[:2]
     Dy, Dx = tile_shape[2:]
 
+    # Drop tiles whose CBED shape doesn't match the first tile — this prevents
+    # old notebook zarrs (different binning/detector params) from silently
+    # mixing with freshly simulated data.
+    compatible = []
+    for entry in tile_files:
+        z = zarr.open(str(entry[2]), mode="r")
+        if z.shape[2:] != (Dy, Dx):
+            print(f"[skip] tile ({entry[0]},{entry[1]}) {entry[2].name}: "
+                  f"CBED shape {z.shape[2:]} != expected ({Dy},{Dx}); "
+                  f"likely from old notebook run — ignoring")
+        else:
+            compatible.append(entry)
+    if not compatible:
+        raise RuntimeError(
+            f"No tiles with matching CBED shape ({Dy},{Dx}) found. "
+            "Run simulate_4dstem.py first to generate compatible data."
+        )
+    tile_files = compatible
+
     rows = max(i for i, _, _ in tile_files) + 1
     cols = max(j for _, j, _ in tile_files) + 1
     out = np.zeros((rows * Sy, cols * Sx, Dy, Dx), dtype="float32")
@@ -94,6 +128,21 @@ def load_and_stitch(tile_dir: Path, p: P.Params,
         print(f"  loaded tile ({i},{j}) {fp.name}: {z.shape}")
 
     print(f"Stitched: {out.shape} ({out.nbytes/1e9:.2f} GB in RAM)")
+
+    # py4DSTEM requires equal resampling factors on both diffraction axes.
+    # The CBED is non-square because box_x ≠ box_y: after K-binning the two
+    # axes have different mrad/px (6.17 vs 4.22 here). Zoom the finer axis
+    # down to match the coarser one — this preserves total angular coverage
+    # and makes both axes equal to p.bf_eff_pixel_mrad (the coarser value).
+    Sdy, Sdx = out.shape[2], out.shape[3]
+    if Sdy != Sdx:
+        from scipy.ndimage import zoom as _zoom
+        sq = min(Sdy, Sdx)
+        out = _zoom(out, [1.0, 1.0, sq / Sdy, sq / Sdx],
+                    order=1).astype("float32")
+        print(f"  CBED resampled to square {sq}×{sq} (was {Sdy}×{Sdx}; "
+              f"both axes now ~{metadata.get('bf_eff_pixel_mrad', '?'):.2f} mrad/px)")
+
     return out, metadata
 
 
@@ -135,9 +184,15 @@ def reconstruct(p: P.Params, *, stage: str = "both",
     del data_4d
     gc.collect()
 
-    polar_params = {"C10": -p.overfocus_a}  # py4DSTEM C10 = -defocus
-    print(f"Probe init: C10 = {polar_params['C10']:+.2f} Å "
-          f"(overfocus = +{p.overfocus_a:.2f} Å in abTEM convention)")
+    # The sim now uses abTEM `defocus = -overfocus_a` for true OVERFOCUS
+    # (crossover above the sample — verified by test_probe_focus.py). Since
+    # abTEM `defocus = -C10` and py4DSTEM's `C10` is the same chi coefficient,
+    # abTEM `defocus = -overfocus_a`  <=>  C10 = +overfocus_a. So py4DSTEM C10
+    # must be +overfocus_a to model the same probe. (This matches the original
+    # working notebook; the plan doc's `-overfocus` was backwards.)
+    polar_params = {"C10": +p.overfocus_a}
+    print(f"Probe init: py4DSTEM C10 = {polar_params['C10']:+.2f} Å  "
+          f"(overfocus; matches sim abTEM defocus = {-p.overfocus_a:+.2f})")
 
     # Pass a scalar float — py4DSTEM broadcasts it to all slices.
     # A list of length (num_slices-1) also works but the float is cleaner.
@@ -168,37 +223,62 @@ def reconstruct(p: P.Params, *, stage: str = "both",
         store_initial_arrays=True,
     )
 
+    stage_a_ran = False
     if stage in ("A", "both"):
         print("\n--- Stage A: probe-fixed warm-up ---")
         t0 = time.time()
+        # Match the working notebook's parameters as closely as possible
+        # for the diagnostic. Once we confirm finite output, the plan's
+        # depth-sectioning improvements (kz_reg, identical_slices) can be
+        # re-introduced one at a time.
         ptycho.reconstruct(
             num_iter=24,
             max_batch_size=p.recon_max_batch_size,
-            step_size=0.5,
+            step_size=0.025,                       # notebook value
             fix_probe=True,
             fit_probe_aberrations=False,
-            kz_regularization_filter=True,
-            kz_regularization_gamma=0.05,
-            identical_slices=True,
+            kz_regularization_filter=False,        # notebook didn't use
             gaussian_filter=True,
-            gaussian_filter_sigma=0.3,
+            gaussian_filter_sigma=0.1,             # notebook value (was 0.3)
             object_positivity=False,
             fix_potential_baseline=True,
             store_iterations=False,
         )
+        stage_a_ran = True
         print(f"Stage A: {(time.time()-t0)/60:.1f} min")
+        _diagnose_object(ptycho, "after Stage A")
 
     if stage in ("B", "both"):
+        if not stage_a_ran:
+            raise RuntimeError(
+                "--stage B cannot run alone: Stage A must precede it in the same "
+                "process to provide the probe-fixed warm-up state. "
+                "Re-run with --stage both."
+            )
         print("\n--- Stage B: release slices + fit probe ---")
+        # Flush the CUDA memory pool before the new reconstruct call.
+        # Without this, py4DSTEM can deadlock at 0 iterations waiting for a
+        # fragmented allocation left over from Stage A.
+        gc.collect()
+        try:
+            import cupy as cp
+            cp.get_default_memory_pool().free_all_blocks()
+            cp.get_default_pinned_memory_pool().free_all_blocks()
+            print("  CUDA memory pool flushed")
+        except Exception:
+            pass
+
         t0 = time.time()
         ptycho.reconstruct(
             num_iter=96,
             max_batch_size=p.recon_max_batch_size,
             step_size=0.1,
-            reset=False,
+            reset=False,   # continues from Stage A state; never reaches here without it
             fix_probe=False,
             fit_probe_aberrations=True,
             fit_probe_aberrations_remove_initial=False,
+            fit_probe_aberrations_using_scikit_image=False,  # scikit-image unwrapper has a documented kernel-hang bug
+            constrain_probe_amplitude=True,   # stabilises probe on release from fix_probe
             kz_regularization_filter=True,
             kz_regularization_gamma=0.02,
             identical_slices=False,
@@ -206,11 +286,10 @@ def reconstruct(p: P.Params, *, stage: str = "both",
             gaussian_filter_sigma=0.1,
             object_positivity=False,
             fix_potential_baseline=True,
-            tv_denoise=True,
-            tv_denoise_weights=[5e-5, 1e-4],
             store_iterations=False,
         )
         print(f"Stage B: {(time.time()-t0)/60:.1f} min")
+        _diagnose_object(ptycho, "after Stage B")
 
     _save_zarr(ptycho, out_path, p, sim_meta)
     return out_path
@@ -244,7 +323,7 @@ def _save_zarr(ptycho, out_path: Path, p: P.Params, sim_meta: dict) -> None:
         "bf_bin": p.bf_bin,
         "bf_eff_pixel_mrad": p.bf_eff_pixel_mrad,
         "overfocus_a": p.overfocus_a,
-        "polar_C10": -p.overfocus_a,
+        "polar_C10": +p.overfocus_a,
         "energy_ev": p.energy_ev,
         "convergence_mrad": p.convergence_mrad,
         "diff_intensities_shape": list(p.recon_diff_intensities_shape),
@@ -266,19 +345,36 @@ def main(argv=None) -> int:
     except Exception:
         pass
     ap = argparse.ArgumentParser()
-    ap.add_argument("--toy", action="store_true")
+    ap.add_argument("--toy", action="store_true",
+                    help="Single-tile (1,1) gating run with toy params.")
+    ap.add_argument("--mini", action="store_true",
+                    help="2x2 tile gating run (8x8 Å scan area) with toy params. "
+                         "Required for a meaningful quality check before production.")
     ap.add_argument("--stage", choices=("A", "B", "both"), default="both")
     ap.add_argument("--tile-dir", type=Path, default=None)
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args(argv)
 
+    if args.toy and args.mini:
+        ap.error("Pass --toy OR --mini, not both.")
+
     _setup_cuda_path()
-    p = P.toy_params() if args.toy else P.derive()
-    if args.toy and args.out is None:
-        args.out = P.PROJECT_ROOT / "ptycho_recon_toy.zarr"
+    p = P.toy_params() if (args.toy or args.mini) else P.derive()
+
+    if args.mini:
+        tile_pairs = [(0, 0), (0, 1), (1, 0), (1, 1)]
+        if args.out is None:
+            args.out = P.PROJECT_ROOT / "ptycho_recon_mini.zarr"
+    elif args.toy:
+        tile_pairs = [(1, 1)]
+        if args.out is None:
+            args.out = P.PROJECT_ROOT / "ptycho_recon_toy.zarr"
+    else:
+        tile_pairs = None  # all 9 tiles
 
     print(P.summary(p))
-    reconstruct(p, stage=args.stage, tile_dir=args.tile_dir, out_path=args.out)
+    reconstruct(p, stage=args.stage, tile_dir=args.tile_dir, out_path=args.out,
+                tile_pairs=tile_pairs)
     return 0
 
 
