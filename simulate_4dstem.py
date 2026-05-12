@@ -14,7 +14,8 @@ Usage::
 
     python simulate_4dstem.py --tile 1 1            # one tile, production
     python simulate_4dstem.py --tile 1 1 --toy      # < 1 h smoke test
-    python simulate_4dstem.py --all                 # all 9 tiles in series
+    python simulate_4dstem.py --all                 # full n_tiles_tiled² grid
+    python simulate_4dstem.py --all --cryo          # ... with cryo (×0.65) DWFs
 """
 from __future__ import annotations
 
@@ -46,8 +47,9 @@ def _setup_cuda_path() -> None:
 def _tile_bounds(tile_i: int, tile_j: int, p: P.Params) -> Tuple[float, float, float, float]:
     """Return (tx_start, ty_start, tx_end, ty_end) in angstroms for tile (i,j).
 
-    Matches the original notebook's edge-construction so existing tile zarrs
-    remain comparable.
+    The scan window is ``p.scan_window_a`` (= ``p.n_tiles_tiled · p.tile_size_a``)
+    centred on (``p.center_x_a``, ``p.center_y_a``), so the simulated
+    ``n_tiles_tiled × n_tiles_tiled`` grid is symmetric about that centre.
     """
     scan_start_x = p.center_x_a - p.scan_window_a / 2
     scan_start_y = p.center_y_a - p.scan_window_a / 2
@@ -214,6 +216,9 @@ def run_single_tile(tile_i: int, tile_j: int, p: P.Params, *,
         "num_slices_sim": p.num_slices_sim,
         "phonon_num_configs": n_cfg,
         "phonon_sigmas_a": p.phonon_sigmas_a,
+        "phonon_dwf_scale": p.phonon_dwf_scale,
+        "n_tiles_tiled": p.n_tiles_tiled,
+        "scan_window_a": p.scan_window_a,
         "real_space_thickness_a": p.real_space_thickness_a,
         "wavelength_a": p.wavelength_a,
     })
@@ -237,13 +242,16 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tile", nargs=2, type=int, metavar=("I", "J"))
     ap.add_argument("--all", action="store_true",
-                    help="Run all 9 tiles (0,0)..(2,2) in series.")
+                    help="Run the whole n_tiles_tiled × n_tiles_tiled grid "
+                         "(default 6×6 = 36 tiles) in series.")
     ap.add_argument("--toy", action="store_true",
-                    help="Toy config (n_configs=2, slice=2 Å, smaller batch).")
+                    help="Toy config (n_configs=2, slice=2 Å, 2×2 grid, smaller batch).")
     ap.add_argument("--mini", action="store_true",
                     help="Mini gating run: 2x2 tile block (0,0)(0,1)(1,0)(1,1) "
-                         "with toy params. ~4 h sim, gives 8x8 Å scan area "
-                         "for a real ptychography quality check.")
+                         "with toy params, at the production overfocus. Gives a "
+                         "real ptychography quality check before the full run.")
+    ap.add_argument("--cryo", action="store_true",
+                    help="Scale all phonon σ by 0.65 (≈LN2/cryo DWFs, W3).")
     ap.add_argument("--num-configs", type=int, default=None)
     ap.add_argument("--overwrite", action="store_true")
     ap.add_argument("--out-dir", type=Path, default=None)
@@ -251,13 +259,17 @@ def main(argv=None) -> int:
 
     _setup_cuda_path()
 
-    p = P.toy_params() if (args.toy or args.mini) else P.derive()
+    dwf = 0.65 if args.cryo else P.PHONON_DWF_SCALE_DEFAULT
+    if args.toy or args.mini:
+        p = P.toy_params(dwf_scale=dwf)
+    else:
+        p = P.derive(dwf_scale=dwf)
     print(P.summary(p))
 
     if args.mini:
         tiles = [(0, 0), (0, 1), (1, 0), (1, 1)]
     elif args.all:
-        tiles = [(i, j) for i in range(3) for j in range(3)]
+        tiles = [(i, j) for i in range(p.n_tiles_tiled) for j in range(p.n_tiles_tiled)]
     elif args.tile is not None:
         tiles = [tuple(args.tile)]
     elif args.toy:

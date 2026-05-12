@@ -15,7 +15,7 @@ depth* along the column. Target: sub-unit-cell axial resolution (~2 Å).
 
 We are **improving on** `TileDataAnalysis_WORKS copy 2.ipynb`, whose 3D
 reconstruction is axially blurred (atom columns smear through the whole
-thickness — see `image.png` for its output: "3D Ptychography 20.5×15.2×70.0 Å³,
+thickness — see `ptycho_3d_final.png` for its output: "3D Ptychography 20.5×15.2×70.0 Å³,
 98 slices").
 
 ---
@@ -35,9 +35,8 @@ the old notebook, despite fixing every item in the original plan.
 
 This is not a bug. It's the physics/engine: a single perpendicular 4D-STEM raster
 of a 7 nm crystal, reconstructed with py4DSTEM's gradient-descent MSPT, does not
-contain / cannot invert enough depth information. The reference paper achieves
-atomic-layer 3D — but with **PtychoShelves (LSQML)**, ultrahigh dose, and
-typically tilt-coupling for sub-nm depth.
+contain / cannot invert enough depth information. The reference 'paper.pdf' achieves
+atomic-layer 3D — but with **PtychoShelves (LSQML)**.
 
 ---
 
@@ -133,7 +132,7 @@ powershell -ExecutionPolicy Bypass -File run_production.ps1
 Production output: `ptycho_recon.zarr` (object_complex / object_phase / probe),
 `ptycho_recon_metadata.json`, `validation_plots/ptycho_recon_summary.png`.
 
-| | Old notebook (`image.png`) | Our pipeline (`ptycho_recon_summary.png`) |
+| | Old notebook (`ptycho_3d_final.pngf`) | Our pipeline (`ptycho_recon_summary.png`) |
 |---|---|---|
 | Slices | 98 (from wrong BOX_Y thickness) | 74 (correct BOX_Z, 1 Å/slice) |
 | Object amplitude | varies (no pure-phase) → artifacts | pinned |obj|=1, clean |
@@ -142,7 +141,7 @@ Production output: `ptycho_recon.zarr` (object_complex / object_phase / probe),
 | XY-at-depth | look different across z — but that's mostly the envelope weighting (bottom slices higher contrast ⇒ "sharper"), not depth structure | — |
 | XZ panel | vertical streaks, **asymmetric envelope** skewed to z≈40–70 (probably the BOX_Y mislabel + amplitude artifacts) | vertical streaks, **symmetric hump** envelope |
 | kz-FRC | (not computed) | **single delta at kz=0, nothing else** — pure projection |
-| Verdict | axially blurred | axially blurred, but *cleaner* (honest projection vs artefactual one) |
+| Verdict | axially blurred | axially blurred, but *cleaner* ((human here id doubt this tbh, look at both images) honest projection vs artefactual one) |
 
 **Bottom line: neither depth-sections.** Our pipeline is a genuine improvement in
 *correctness and cleanliness* (right beam axis, verified probe sign, pure-phase
@@ -176,7 +175,7 @@ history the rebuild briefly had sim `defocus=+10` (underfocus) + recon `C10=-10`
 probe inside the material — at any reasonable raster step the overlap of a sharp
 probe would be terrible. So "focus in the middle" is OFF the table. (The
 reference paper agrees in spirit: it uses a *huge* overfocus, never converges in
-the sample — see §5.)
+the sample — see §5. we could use this too)
 
 ---
 
@@ -253,7 +252,7 @@ and possibly **too little scan area** (12×12 Å vs the paper's ~26×26 Å).
    might sharpen depth contrast. Cheap to test.
 5. **Single perpendicular scan is just not enough.** Per the literature, sub-nm
    depth in thick samples needs tilt-coupling. If 1–4 don't crack it, the honest
-   answer is the experiment design needs tilts (or the goal is nm-scale, not 2 Å).
+   answer is the experiment design needs tilts though hopefully as they did in paper.pdf we can get atomic depth resolution without tilt.
 
 ---
 
@@ -295,7 +294,7 @@ enough" means before spending more cycles chasing atomic-layer depth.
 **Not recommended:** more kz-reg gamma (exhausted — moved std ratio, not kz-FRC),
 more TV-z weight (smooths the envelope, doesn't create structure), focusing the
 probe inside the sample (user constraint: kills lateral overlap), more recon
-iterations (it's converged — to a projection).
+iterations (it's converged — to a projection). kz-gamma 0.1-0.2 used. we shouldnt have to smooth like this though as we are trying to see structure! and we are blurring it.
 
 ---
 

@@ -21,7 +21,13 @@ import numpy as np
 # ---------------------------------------------------------------------------
 ENERGY_EV: float = 300e3
 CONVERGENCE_MRAD: float = 100.0
-OVERFOCUS_NM: float = 1.0  # positive = probe focused before sample (overfocus)
+# Positive = probe focused before sample (overfocus). Bumped 1.0 -> 5.0 nm
+# (W2): a wider probe spreads over many unit cells => much more overlap
+# diversity => a better-conditioned ptychographic inversion (handover §6.3).
+# 5 nm => geometric spread α·Δf = 0.1·50 Å = 5 Å effective probe (vs ~1 Å
+# before). NOT focusing inside the sample (would kill lateral overlap — hard
+# user constraint). Picked via derive_scan.py against the paper's recipe.
+OVERFOCUS_NM: float = 5.0
 
 HAADF_INNER_MRAD: float = 110.0
 # 185 mrad is safely within the ~197 mrad simulated angular range (grid-limited
@@ -33,14 +39,22 @@ HAADF_OUTER_MRAD: float = 185.0
 DETECTOR_MAX_ANGLE_MRAD: float = 200.0
 DETECTOR_TARGET_PIXELS: int = 64
 
-# Scan: the existing notebook nominally declares 40 × 40 Å but tiles only 12 ×
-# 12 Å. We keep the centre and the 9-tile grid so existing zarr files remain
-# usable; the production run can be expanded later if compute budget allows.
+# Scan: the simulated/stitched region is an N_TILES_TILED × N_TILES_TILED grid
+# of TILE_SIZE_A tiles, centred on (CENTER_X_A, CENTER_Y_A). Bumped from a
+# hard-coded 3×3 (12×12 Å) to 6×6 (24×24 Å) (W2): more positions over a bigger
+# area ⇒ depth structure constrained rather than regularised flat (handover
+# §6.2); ~26×26 Å is what the reference paper used.
 CENTER_X_A: float = 23.0
 CENTER_Y_A: float = 35.0
-SCAN_WIDTH_A: float = 40.0   # nominal scan window (only central 12 Å tiled)
-TILE_SIZE_A: float = 4.0     # one tile is TILE_SIZE_A × TILE_SIZE_A
-TARGET_OVERLAP: float = 0.75  # fraction of probe FWHM to overlap
+N_TILES_TILED: int = 6        # tiles per side of the simulated grid (was 3)
+TILE_SIZE_A: float = 4.0      # one tile is TILE_SIZE_A × TILE_SIZE_A
+SCAN_WIDTH_A: float = 40.0    # legacy nominal window; derive() now uses
+                              # N_TILES_TILED·TILE_SIZE_A as the real window
+# Fraction of (effective) probe FWHM that successive scan positions overlap.
+# Bumped 0.75 -> 0.90 (W2): the bigger overfocus inflates the effective FWHM,
+# so at 0.75 the derived step (= (1-overlap)·FWHM) would coarsen to several Å
+# and the position count would collapse; 0.90 keeps it near the paper's count.
+TARGET_OVERLAP: float = 0.90
 
 # Multislice simulation slice thickness. Existing 0.31 Å is over-fine; 1.0 Å
 # is sufficient at 100 mrad and gives a ~3× speedup.
@@ -54,6 +68,11 @@ PHONON_NUM_CONFIGS: int = 8
 PHONON_SIGMAS_A: dict[str, float] = {
     "Pb": 0.092, "Sr": 0.085, "Ti": 0.072, "O": 0.085,
 }
+# Multiplies every phonon σ. 1.0 = room temperature. ~0.65 ≈ LN2 / cryo (W3):
+# the paper notes depth resolution is "sensitive to lattice vibrations" and
+# cryo helps (handover §5, §6.4). Set per-run via simulate_4dstem.py --cryo;
+# this is just the default for derive()/toy_params().
+PHONON_DWF_SCALE_DEFAULT: float = 1.0
 
 # File system.
 PROJECT_ROOT: Path = Path(__file__).resolve().parent
@@ -108,7 +127,8 @@ class Params:
     target_overlap: float
     sim_slice_thickness_a: float
     phonon_num_configs: int
-    phonon_sigmas_a: dict
+    phonon_sigmas_a: dict          # already scaled by phonon_dwf_scale
+    phonon_dwf_scale: float
 
     # Geometry (after rotate/orthogonalize/center).
     box_x_a: float
@@ -127,7 +147,7 @@ class Params:
     tile_size_a: float
     center_x_a: float
     center_y_a: float
-    num_tiles_per_side: int
+    n_tiles_tiled: int   # simulated/stitched grid is n_tiles_tiled × n_tiles_tiled
 
     # Multislice.
     num_slices_sim: int  # ceil(thickness / slice)
@@ -162,6 +182,8 @@ def derive(
     sim_slice_thickness_a: float = SIM_SLICE_THICKNESS_A,
     phonon_num_configs: int = PHONON_NUM_CONFIGS,
     target_overlap: float = TARGET_OVERLAP,
+    n_tiles_tiled: int = N_TILES_TILED,
+    dwf_scale: float = PHONON_DWF_SCALE_DEFAULT,
     box_dims_a: Tuple[float, float, float] | None = None,
     recon_num_slices: int | None = None,
     recon_max_batch_size: int = 64,
@@ -187,7 +209,10 @@ def derive(
     probe_fwhm_effective_a = float(np.sqrt(probe_fwhm_focused_a ** 2 + geom_spread_a ** 2))
 
     scan_step_a = (1.0 - target_overlap) * probe_fwhm_effective_a
-    num_tiles_per_side = int(np.ceil(SCAN_WIDTH_A / TILE_SIZE_A))
+    # The real scan window is the tiled grid, centred on (CENTER_X_A, CENTER_Y_A).
+    scan_window_a = float(n_tiles_tiled * TILE_SIZE_A)
+
+    phonon_sigmas_scaled = {k: v * dwf_scale for k, v in PHONON_SIGMAS_A.items()}
 
     num_slices_sim = int(np.ceil(real_space_thickness_a / sim_slice_thickness_a))
 
@@ -229,7 +254,8 @@ def derive(
         target_overlap=target_overlap,
         sim_slice_thickness_a=sim_slice_thickness_a,
         phonon_num_configs=phonon_num_configs,
-        phonon_sigmas_a={"Pb": 0.092, "Sr": 0.085, "Ti": 0.072, "O": 0.085},
+        phonon_sigmas_a=phonon_sigmas_scaled,
+        phonon_dwf_scale=dwf_scale,
         box_x_a=box_x_a,
         box_y_a=box_y_a,
         box_z_a=box_z_a,
@@ -238,11 +264,11 @@ def derive(
         probe_fwhm_focused_a=probe_fwhm_focused_a,
         probe_fwhm_effective_a=probe_fwhm_effective_a,
         scan_step_a=scan_step_a,
-        scan_window_a=SCAN_WIDTH_A,
+        scan_window_a=scan_window_a,
         tile_size_a=TILE_SIZE_A,
         center_x_a=CENTER_X_A,
         center_y_a=CENTER_Y_A,
-        num_tiles_per_side=num_tiles_per_side,
+        n_tiles_tiled=n_tiles_tiled,
         num_slices_sim=num_slices_sim,
         bf_bin=bf_bin,
         bf_native_pixel_mrad=bf_native_pixel_mrad,
@@ -256,15 +282,26 @@ def derive(
     )
 
 
-def toy_params() -> Params:
-    """Tiny config for the < 1 h gating test."""
+def toy_params(*, dwf_scale: float = PHONON_DWF_SCALE_DEFAULT) -> Params:
+    """Tiny config for the < 1 h gating test (and the ~few-h --mini run).
+
+    n_tiles_tiled=2 ⇒ a 2×2 tile block; the toy/mini CLIs pick a 2×2 subset.
+    """
     return derive(
         sim_slice_thickness_a=2.0,
         phonon_num_configs=2,
+        n_tiles_tiled=2,
+        dwf_scale=dwf_scale,
         recon_num_slices=20,
         recon_max_batch_size=16,
         recon_diff_intensities_shape=(48, 48),
     )
+
+
+def _pos_per_tile_axis(p: Params) -> int:
+    """Approx scan positions along one tile axis (abTEM GridScan rounds
+    extent/sampling)."""
+    return max(1, int(round(p.tile_size_a / p.scan_step_a)))
 
 
 def summary(p: Params) -> str:
@@ -276,11 +313,14 @@ def summary(p: Params) -> str:
         f"  (beam=Z, thickness={p.real_space_thickness_a:.2f} Å)\n"
         f"  Probe:       FWHM_focused={p.probe_fwhm_focused_a:.3f} Å, "
         f"effective={p.probe_fwhm_effective_a:.3f} Å\n"
-        f"  Scan:        step={p.scan_step_a:.3f} Å  "
-        f"({p.target_overlap*100:.0f}% overlap)\n"
+        f"  Scan:        {p.n_tiles_tiled}×{p.n_tiles_tiled} tiles × "
+        f"{p.tile_size_a:.1f} Å = {p.scan_window_a:.0f}×{p.scan_window_a:.0f} Å, "
+        f"step={p.scan_step_a:.3f} Å ({p.target_overlap*100:.0f}% overlap)\n"
+        f"               ≈{_pos_per_tile_axis(p)**2} pos/tile ⇒ "
+        f"≈{(_pos_per_tile_axis(p)*p.n_tiles_tiled)**2} positions total\n"
         f"  Sim slices:  {p.num_slices_sim} × {p.sim_slice_thickness_a:.2f} Å\n"
         f"  Phonons:     n_configs={p.phonon_num_configs}, "
-        f"σ={p.phonon_sigmas_a}\n"
+        f"DWF×{p.phonon_dwf_scale:.2f}, σ={p.phonon_sigmas_a}\n"
         f"  Detector:    θ_max={p.detector_max_angle_mrad:.0f} mrad, "
         f"N≈{p.detector_target_pixels}, K={p.bf_bin}, "
         f"eff_pix={p.bf_eff_pixel_mrad:.2f} mrad/px\n"

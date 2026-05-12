@@ -146,9 +146,9 @@ def load_and_stitch(tile_dir: Path, p: P.Params,
     return out, metadata
 
 
-def _calibrate(datacube, p: P.Params, q_pixel_size: float) -> None:
+def _calibrate(datacube, r_pixel_size: float, q_pixel_size: float) -> None:
     """Apply real- and reciprocal-space pixel calibrations + origin."""
-    datacube.calibration.set_R_pixel_size(p.scan_step_a)
+    datacube.calibration.set_R_pixel_size(r_pixel_size)
     datacube.calibration.set_R_pixel_units("A")
     datacube.calibration.set_Q_pixel_size(q_pixel_size)
     datacube.calibration.set_Q_pixel_units("A^-1")
@@ -165,7 +165,8 @@ def reconstruct(p: P.Params, *, stage: str = "both",
 
     tile_dir = tile_dir or P.PROJECT_ROOT
     out_path = out_path or P.PROJECT_ROOT / "ptycho_recon.zarr"
-    tile_pairs = tile_pairs or [(i, j) for i in range(3) for j in range(3)]
+    tile_pairs = tile_pairs or [(i, j) for i in range(p.n_tiles_tiled)
+                                for j in range(p.n_tiles_tiled)]
 
     print("=" * 60)
     print(f"Multislice ptychography | stage={stage}")
@@ -174,13 +175,20 @@ def reconstruct(p: P.Params, *, stage: str = "both",
     data_4d, sim_meta = load_and_stitch(tile_dir, p, tile_pairs)
 
     # Reciprocal pixel size in Å⁻¹ (NOT in mrad). dk = pix_mrad / (1000 · λ).
+    # Prefer values written by the sim into the tile zarr over a fresh
+    # params.derive() — guards against a params/data mismatch silently
+    # mis-calibrating the real- or reciprocal-space pixel size.
     eff_mrad = float(sim_meta.get("bf_eff_pixel_mrad", p.bf_eff_pixel_mrad))
     q_pixel_size = eff_mrad / (1000.0 * p.wavelength_a)
-    print(f"Calibration: R={p.scan_step_a:.4f} Å/px, "
+    r_pixel_size = float(sim_meta.get("scan_step_a", p.scan_step_a))
+    if abs(r_pixel_size - p.scan_step_a) > 1e-6:
+        print(f"[warn] sim scan_step_a={r_pixel_size:.4f} Å differs from "
+              f"params {p.scan_step_a:.4f} Å — using the sim value")
+    print(f"Calibration: R={r_pixel_size:.4f} Å/px, "
           f"Q={q_pixel_size:.4f} Å⁻¹/px (from {eff_mrad:.2f} mrad/px)")
 
     datacube = py4DSTEM.DataCube(data=data_4d)
-    _calibrate(datacube, p, q_pixel_size)
+    _calibrate(datacube, r_pixel_size, q_pixel_size)
     del data_4d
     gc.collect()
 
@@ -190,9 +198,10 @@ def reconstruct(p: P.Params, *, stage: str = "both",
     # abTEM `defocus = -overfocus_a`  <=>  C10 = +overfocus_a. So py4DSTEM C10
     # must be +overfocus_a to model the same probe. (This matches the original
     # working notebook; the plan doc's `-overfocus` was backwards.)
-    polar_params = {"C10": +p.overfocus_a}
+    overfocus_a = float(sim_meta.get("overfocus_a", p.overfocus_a))
+    polar_params = {"C10": +overfocus_a}
     print(f"Probe init: py4DSTEM C10 = {polar_params['C10']:+.2f} Å  "
-          f"(overfocus; matches sim abTEM defocus = {-p.overfocus_a:+.2f})")
+          f"(overfocus; matches sim abTEM defocus = {-overfocus_a:+.2f})")
 
     # Pass a scalar float — py4DSTEM broadcasts it to all slices.
     # A list of length (num_slices-1) also works but the float is cleaner.
@@ -357,6 +366,9 @@ def main(argv=None) -> int:
                     help="2x2 tile gating run (8x8 Å scan area) with toy params. "
                          "Required for a meaningful quality check before production.")
     ap.add_argument("--stage", choices=("A", "B", "both"), default="both")
+    ap.add_argument("--cryo", action="store_true",
+                    help="Match a --cryo sim (phonon σ ×0.65); affects recorded "
+                         "metadata only — calibration is taken from the tile zarrs.")
     ap.add_argument("--tile-dir", type=Path, default=None)
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args(argv)
@@ -365,7 +377,11 @@ def main(argv=None) -> int:
         ap.error("Pass --toy OR --mini, not both.")
 
     _setup_cuda_path()
-    p = P.toy_params() if (args.toy or args.mini) else P.derive()
+    dwf = 0.65 if args.cryo else P.PHONON_DWF_SCALE_DEFAULT
+    if args.toy or args.mini:
+        p = P.toy_params(dwf_scale=dwf)
+    else:
+        p = P.derive(dwf_scale=dwf)
 
     if args.mini:
         tile_pairs = [(0, 0), (0, 1), (1, 0), (1, 1)]
@@ -376,7 +392,7 @@ def main(argv=None) -> int:
         if args.out is None:
             args.out = P.PROJECT_ROOT / "ptycho_recon_toy.zarr"
     else:
-        tile_pairs = None  # all 9 tiles
+        tile_pairs = None  # full n_tiles_tiled × n_tiles_tiled grid
 
     print(P.summary(p))
     reconstruct(p, stage=args.stage, tile_dir=args.tile_dir, out_path=args.out,
