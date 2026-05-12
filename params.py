@@ -46,10 +46,11 @@ TARGET_OVERLAP: float = 0.75  # fraction of probe FWHM to overlap
 # is sufficient at 100 mrad and gives a ~3× speedup.
 SIM_SLICE_THICKNESS_A: float = 1.0
 
-# Frozen phonons. Sigmas are starting values from perovskite literature;
-# verify against DWFs before production. n_configs=4 keeps total per-tile
-# wall-clock under ~13 h on the user's hardware.
-PHONON_NUM_CONFIGS: int = 4
+# Frozen phonons. Sigmas are starting values from perovskite literature.
+# 8 configs: the GPU sim runs ~10-20 min/tile (the handover's "8-13 h/tile"
+# was a wild over-estimate), and dark-field signal quality (suspected
+# depth-sectioning bottleneck) scales with TDS sampling, so 8 > 4 is worth it.
+PHONON_NUM_CONFIGS: int = 8
 PHONON_SIGMAS_A: dict[str, float] = {
     "Pb": 0.092, "Sr": 0.085, "Ti": 0.072, "O": 0.085,
 }

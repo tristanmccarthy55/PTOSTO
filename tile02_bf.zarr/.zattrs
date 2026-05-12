@@ -1,0 +1,26 @@
+{
+    "bf_bin": 15,
+    "bf_eff_pixel_mrad": 6.167202408564567,
+    "convergence_mrad": 100.0,
+    "detector_max_angle_mrad": 200.0,
+    "energy_ev": 300000.0,
+    "num_slices_sim": 74,
+    "overfocus_a": 10.0,
+    "phonon_num_configs": 8,
+    "phonon_sigmas_a": {
+        "O": 0.085,
+        "Pb": 0.092,
+        "Sr": 0.085,
+        "Ti": 0.072
+    },
+    "real_space_thickness_a": 73.93466591419461,
+    "scan_step_a": 0.2517963577827478,
+    "sim_slice_thickness_a": 1.0,
+    "tile_i": 0,
+    "tile_j": 2,
+    "tx_end_a": 7.0,
+    "tx_start_a": 3.0,
+    "ty_end_a": 27.0,
+    "ty_start_a": 23.0,
+    "wavelength_a": 0.019687489006848795
+}

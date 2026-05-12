@@ -272,15 +272,21 @@ def reconstruct(p: P.Params, *, stage: str = "both",
         ptycho.reconstruct(
             num_iter=96,
             max_batch_size=p.recon_max_batch_size,
-            step_size=0.1,
+            step_size=0.05,            # 0.1 let the object amplitude run wild on small data
             reset=False,   # continues from Stage A state; never reaches here without it
             fix_probe=False,
             fit_probe_aberrations=True,
             fit_probe_aberrations_remove_initial=False,
             fit_probe_aberrations_using_scikit_image=False,  # scikit-image unwrapper has a documented kernel-hang bug
             constrain_probe_amplitude=True,   # stabilises probe on release from fix_probe
+            pure_phase_object=True,    # PTO/STO is ~pure phase; pinning |obj|=1 kills the
+                                       # amplitude/phase degeneracy that ate the depth info
             kz_regularization_filter=True,
-            kz_regularization_gamma=0.02,
+            kz_regularization_gamma=0.2,   # ablated up from 0.02 — needed to break the
+                                           # flat-projection minimum (std ratio 1.07 -> 1.81)
+            tv_denoise=True,               # direct piecewise-depth prior (layered/vortex sample)
+            tv_denoise_weights=[1e-3, 1e-4],  # [kz, kxy] — strong z smoothing toward
+                                              # piecewise-constant depth, gentle in-plane
             identical_slices=False,
             gaussian_filter=True,
             gaussian_filter_sigma=0.1,
