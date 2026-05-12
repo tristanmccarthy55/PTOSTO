@@ -41,19 +41,25 @@ DETECTOR_TARGET_PIXELS: int = 64
 
 # Scan: the simulated/stitched region is an N_TILES_TILED × N_TILES_TILED grid
 # of TILE_SIZE_A tiles, centred on (CENTER_X_A, CENTER_Y_A). Bumped from a
-# hard-coded 3×3 (12×12 Å) to 6×6 (24×24 Å) (W2): more positions over a bigger
+# hard-coded 3×3 (12×12 Å) to 5×5 (20×20 Å) (W2): more positions over a bigger
 # area ⇒ depth structure constrained rather than regularised flat (handover
-# §6.2); ~26×26 Å is what the reference paper used.
+# §6.2); ~26×26 Å is what the reference paper used. 5×5 (not 6×6) so the
+# defocused probe — widest at the EXIT surface, radius α·(Δf+t) — still fits
+# inside the periodic abTEM cell (short axis x ≈ 48 Å) at the worst-case scan
+# corner; see the clearance table in derive_scan.py.
 CENTER_X_A: float = 23.0
 CENTER_Y_A: float = 35.0
-N_TILES_TILED: int = 6        # tiles per side of the simulated grid (was 3)
+N_TILES_TILED: int = 5        # tiles per side of the simulated grid (was 3)
 TILE_SIZE_A: float = 4.0      # one tile is TILE_SIZE_A × TILE_SIZE_A
 SCAN_WIDTH_A: float = 40.0    # legacy nominal window; derive() now uses
                               # N_TILES_TILED·TILE_SIZE_A as the real window
 # Fraction of (effective) probe FWHM that successive scan positions overlap.
 # Bumped 0.75 -> 0.90 (W2): the bigger overfocus inflates the effective FWHM,
 # so at 0.75 the derived step (= (1-overlap)·FWHM) would coarsen to several Å
-# and the position count would collapse; 0.90 keeps it near the paper's count.
+# and the position count would collapse. 0.90 here ⇒ ≈0.5 Å step, ~95% realized
+# linear overlap, ≈64 pos/tile ⇒ ≈1600 positions over 5×5 tiles — a real-scale
+# diagnostic run in ~2 h. Raise to 0.95 (≈0.25 Å step, ~97.5%, ≈6400 positions,
+# > the paper's ~4096) for the final run once the diagnostic shows depth signal.
 TARGET_OVERLAP: float = 0.90
 
 # Multislice simulation slice thickness. Existing 0.31 Å is over-fine; 1.0 Å
@@ -70,9 +76,10 @@ PHONON_SIGMAS_A: dict[str, float] = {
 }
 # Multiplies every phonon σ. 1.0 = room temperature. ~0.65 ≈ LN2 / cryo (W3):
 # the paper notes depth resolution is "sensitive to lattice vibrations" and
-# cryo helps (handover §5, §6.4). Set per-run via simulate_4dstem.py --cryo;
-# this is just the default for derive()/toy_params().
-PHONON_DWF_SCALE_DEFAULT: float = 1.0
+# cryo helps (handover §5, §6.4). **Cryo is now the default** (we're committed
+# to a cryo experiment) — override per run with simulate_4dstem.py --room for
+# the room-temperature ablation. --cryo is still accepted (it's the default).
+PHONON_DWF_SCALE_DEFAULT: float = 0.65
 
 # File system.
 PROJECT_ROOT: Path = Path(__file__).resolve().parent
@@ -140,10 +147,12 @@ class Params:
     wavelength_a: float
     probe_fwhm_focused_a: float
     probe_fwhm_effective_a: float
+    probe_disk_diameter_a: float   # geometric shadow disk of the defocused probe = 2·α·Δf
 
     # Sampling / scan.
     scan_step_a: float
     scan_window_a: float
+    overlap_linear: float          # realized linear probe overlap = 1 − scan_step / probe footprint Ø
     tile_size_a: float
     center_x_a: float
     center_y_a: float
@@ -205,12 +214,22 @@ def derive(
     wavelength_a = relativistic_wavelength_a(energy_ev)
     alpha_rad = convergence_mrad * 1e-3
     probe_fwhm_focused_a = 0.61 * wavelength_a / alpha_rad
+    # geom_spread = α·Δf is the geometric shadow-disk *radius* of the
+    # defocused probe; the derived scan step uses it (via probe_fwhm_effective)
+    # as a conservative probe-size proxy. The actual probe *footprint diameter*
+    # is ≈ 2·α·Δf, so the realized overlap (below) comes out a bit *higher*
+    # than `target_overlap` — fine, more overlap diversity is the goal (W2).
     geom_spread_a = alpha_rad * overfocus_a
     probe_fwhm_effective_a = float(np.sqrt(probe_fwhm_focused_a ** 2 + geom_spread_a ** 2))
+    probe_disk_diameter_a = 2.0 * alpha_rad * overfocus_a
 
     scan_step_a = (1.0 - target_overlap) * probe_fwhm_effective_a
     # The real scan window is the tiled grid, centred on (CENTER_X_A, CENTER_Y_A).
     scan_window_a = float(n_tiles_tiled * TILE_SIZE_A)
+    # Realized linear overlap of adjacent probe footprints. Use the larger of
+    # the focused FWHM and the geometric disk diameter as the footprint Ø.
+    probe_footprint_a = max(probe_fwhm_focused_a, probe_disk_diameter_a)
+    overlap_linear = float(max(0.0, 1.0 - scan_step_a / probe_footprint_a))
 
     phonon_sigmas_scaled = {k: v * dwf_scale for k, v in PHONON_SIGMAS_A.items()}
 
@@ -263,8 +282,10 @@ def derive(
         wavelength_a=wavelength_a,
         probe_fwhm_focused_a=probe_fwhm_focused_a,
         probe_fwhm_effective_a=probe_fwhm_effective_a,
+        probe_disk_diameter_a=probe_disk_diameter_a,
         scan_step_a=scan_step_a,
         scan_window_a=scan_window_a,
+        overlap_linear=overlap_linear,
         tile_size_a=TILE_SIZE_A,
         center_x_a=CENTER_X_A,
         center_y_a=CENTER_Y_A,
@@ -312,10 +333,14 @@ def summary(p: Params) -> str:
         f"  Cell:        {p.box_x_a:.2f} × {p.box_y_a:.2f} × {p.box_z_a:.2f} Å"
         f"  (beam=Z, thickness={p.real_space_thickness_a:.2f} Å)\n"
         f"  Probe:       FWHM_focused={p.probe_fwhm_focused_a:.3f} Å, "
-        f"effective={p.probe_fwhm_effective_a:.3f} Å\n"
+        f"effective(FWHM)={p.probe_fwhm_effective_a:.3f} Å, "
+        f"footprint Ø(=2·α·Δf)={p.probe_disk_diameter_a:.2f} Å\n"
         f"  Scan:        {p.n_tiles_tiled}×{p.n_tiles_tiled} tiles × "
         f"{p.tile_size_a:.1f} Å = {p.scan_window_a:.0f}×{p.scan_window_a:.0f} Å, "
-        f"step={p.scan_step_a:.3f} Å ({p.target_overlap*100:.0f}% overlap)\n"
+        f"step={p.scan_step_a:.3f} Å\n"
+        f"  Overlap:     {p.overlap_linear*100:.1f}% linear "
+        f"(step {p.scan_step_a:.3f} Å / footprint {p.probe_disk_diameter_a:.2f} Å); "
+        f"target was {p.target_overlap*100:.0f}% of effective FWHM\n"
         f"               ≈{_pos_per_tile_axis(p)**2} pos/tile ⇒ "
         f"≈{(_pos_per_tile_axis(p)*p.n_tiles_tiled)**2} positions total\n"
         f"  Sim slices:  {p.num_slices_sim} × {p.sim_slice_thickness_a:.2f} Å\n"

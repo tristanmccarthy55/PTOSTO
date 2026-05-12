@@ -14,8 +14,8 @@ Usage::
 
     python simulate_4dstem.py --tile 1 1            # one tile, production
     python simulate_4dstem.py --tile 1 1 --toy      # < 1 h smoke test
-    python simulate_4dstem.py --all                 # full n_tiles_tiled² grid
-    python simulate_4dstem.py --all --cryo          # ... with cryo (×0.65) DWFs
+    python simulate_4dstem.py --all                 # full grid, cryo σ (default)
+    python simulate_4dstem.py --all --room          # ... room-temp σ (W3 ablation)
 """
 from __future__ import annotations
 
@@ -163,6 +163,14 @@ def run_single_tile(tile_i: int, tile_j: int, p: P.Params, *,
                           sampling=p.scan_step_a)
     print(f"Tile scan: {scan.shape[0]} × {scan.shape[1]} positions, "
           f"({tx_start:.1f},{ty_start:.1f}) -> ({tx_end:.1f},{ty_end:.1f}) Å")
+    try:
+        realized_step = float(np.mean(np.atleast_1d(scan.sampling)))
+        if p.probe_disk_diameter_a > 0:
+            ovl_lin = max(0.0, 1.0 - realized_step / p.probe_disk_diameter_a)
+            print(f"  realized step ≈ {realized_step:.3f} Å  ⇒  linear overlap ≈ "
+                  f"{ovl_lin*100:.1f}%  (probe footprint Ø ≈ {p.probe_disk_diameter_a:.2f} Å)")
+    except Exception:
+        pass
 
     # Compute the actual simulated angular range from the probe grid so that
     # the HAADF outer limit never exceeds what abTEM can integrate.
@@ -204,6 +212,8 @@ def run_single_tile(tile_i: int, tile_j: int, p: P.Params, *,
     bf_target.attrs.update({
         "tile_i": tile_i, "tile_j": tile_j,
         "scan_step_a": p.scan_step_a,
+        "overlap_linear": p.overlap_linear,
+        "probe_disk_diameter_a": p.probe_disk_diameter_a,
         "tx_start_a": tx_start, "ty_start_a": ty_start,
         "tx_end_a": tx_end, "ty_end_a": ty_end,
         "energy_ev": p.energy_ev,
@@ -251,7 +261,9 @@ def main(argv=None) -> int:
                          "with toy params, at the production overfocus. Gives a "
                          "real ptychography quality check before the full run.")
     ap.add_argument("--cryo", action="store_true",
-                    help="Scale all phonon σ by 0.65 (≈LN2/cryo DWFs, W3).")
+                    help="Cryo phonon σ ×0.65 (this is the default; flag is a no-op).")
+    ap.add_argument("--room", action="store_true",
+                    help="Room-temperature phonon σ (×1.0) — for the W3 ablation.")
     ap.add_argument("--num-configs", type=int, default=None)
     ap.add_argument("--overwrite", action="store_true")
     ap.add_argument("--out-dir", type=Path, default=None)
@@ -259,7 +271,9 @@ def main(argv=None) -> int:
 
     _setup_cuda_path()
 
-    dwf = 0.65 if args.cryo else P.PHONON_DWF_SCALE_DEFAULT
+    if args.room and args.cryo:
+        ap.error("Pass --room OR --cryo, not both.")
+    dwf = 1.0 if args.room else (0.65 if args.cryo else P.PHONON_DWF_SCALE_DEFAULT)
     if args.toy or args.mini:
         p = P.toy_params(dwf_scale=dwf)
     else:

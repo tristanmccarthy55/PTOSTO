@@ -2,7 +2,7 @@
   "num_slices": 20,
   "slice_thickness_a": 3.6967332957097305,
   "real_space_thickness_a": 73.93466591419461,
-  "scan_step_a": 0.5001442041319933,
+  "scan_step_a": 0.25007210206599695,
   "reconstruction_pixel_size_a": 0.0512474399718245,
   "bf_bin": 15,
   "bf_eff_pixel_mrad": 6.167202408564567,

@@ -9,12 +9,12 @@
     "energy_ev": 300000.0,
     "loaded_from_first_tile": "C:\\Users\\Trist\\HyperSpy-bundle\\MY HYPERSPY CODE\\PTOSTO\\tile00_bf.zarr",
     "num_slices": 74,
-    "overfocus_a": 10.0,
+    "overfocus_a": 50.0,
     "phonon_num_configs": 8,
-    "polar_C10": 10.0,
+    "polar_C10": 50.0,
     "real_space_thickness_a": 73.93466591419461,
     "reconstruction_pixel_size_a": 0.050696392230191976,
-    "scan_step_a": 0.2517963577827478,
+    "scan_step_a": 0.5001442041319933,
     "sim_slice_thickness_a": 1.0,
     "slice_thickness_a": 0.9991171069485758
 }

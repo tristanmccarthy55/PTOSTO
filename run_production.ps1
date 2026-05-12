@@ -2,12 +2,15 @@
 #
 # Run from the PTOSTO directory:
 #     powershell -ExecutionPolicy Bypass -File run_production.ps1
-#     powershell -ExecutionPolicy Bypass -File run_production.ps1 -Cryo   # cryo DWFs (W3)
+#     powershell -ExecutionPolicy Bypass -File run_production.ps1 -Room   # room-temp DWFs (W3 ablation)
 # or just:
 #     .\run_production.ps1
+# Cryo (phonon σ ×0.65) is the DEFAULT; -Room reverts to room-temperature σ.
 #
-# Steps (W2 grid = 6x6 = 36 tiles; total ~3-4 h on the user's GPU -- sim is the
-# bulk, ~2-2.5 h at the 5 nm overfocus / 0.5 A step, recon ~0.5-1 h):
+# Steps (W2 grid = 5x5 = 25 tiles, 5 nm overfocus; with the current
+# TARGET_OVERLAP=0.90 that's ≈0.5 A step ≈ 64 pos/tile ≈ 1600 positions, total
+# ~2 h on the user's GPU -- sim ~1.5 h, recon ~0.5 h. Raise TARGET_OVERLAP to
+# 0.95 in params.py for the ~4× larger final run [≈6400 positions, ~7-9 h]):
 #   1. simulate_4dstem.py --all --overwrite   (n_tiles_tiled^2 tiles, 8 phonon
 #      configs, 1 A slices).  --overwrite is REQUIRED: any tile zarrs on disk are
 #      from earlier (smaller-grid / mini) runs and MUST be regenerated with the
@@ -19,13 +22,13 @@
 # If a step exits non-zero the run aborts and the log says where.
 
 param(
-    [switch]$Cryo
+    [switch]$Room
 )
 
 $py = "C:\Users\Trist\HyperSpy-bundle\python.exe"
 $stamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $log = "production_run_$stamp.log"
-$cryoArgs = if ($Cryo) { @("--cryo") } else { @() }
+$dwfArgs = if ($Room) { @("--room") } else { @() }   # cryo σ is the default
 
 Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
 Start-Transcript -Path $log | Out-Null
@@ -36,9 +39,9 @@ Write-Host "Log file: $log"
 Write-Host "================================================================"
 
 Write-Host ""
-Write-Host "--- [1/3] Simulating tile grid  (simulate_4dstem.py --all --overwrite $cryoArgs) ---"
+Write-Host "--- [1/3] Simulating tile grid  (simulate_4dstem.py --all --overwrite $dwfArgs) ---"
 $t0 = Get-Date
-& $py simulate_4dstem.py --all --overwrite @cryoArgs
+& $py simulate_4dstem.py --all --overwrite @dwfArgs
 if ($LASTEXITCODE -ne 0) {
     Write-Host ""
     Write-Host "!!! SIMULATION FAILED (exit code $LASTEXITCODE) after $((Get-Date) - $t0). Aborting."
@@ -50,7 +53,7 @@ Write-Host "--- Simulation done in $((Get-Date) - $t0) ---"
 Write-Host ""
 Write-Host "--- [2/3] Reconstruction  (reconstruct_ptycho.py --stage both) ---"
 $t0 = Get-Date
-& $py reconstruct_ptycho.py --stage both @cryoArgs
+& $py reconstruct_ptycho.py --stage both @dwfArgs
 if ($LASTEXITCODE -ne 0) {
     Write-Host ""
     Write-Host "!!! RECONSTRUCTION FAILED (exit code $LASTEXITCODE) after $((Get-Date) - $t0). Aborting."

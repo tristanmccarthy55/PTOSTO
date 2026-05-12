@@ -14,7 +14,7 @@
     "polar_C10": 50.0,
     "real_space_thickness_a": 73.93466591419461,
     "reconstruction_pixel_size_a": 0.0512474399718245,
-    "scan_step_a": 0.5001442041319933,
+    "scan_step_a": 0.25007210206599695,
     "sim_slice_thickness_a": 2.0,
     "slice_thickness_a": 3.6967332957097305
 }

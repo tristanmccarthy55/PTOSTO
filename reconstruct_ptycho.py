@@ -367,17 +367,21 @@ def main(argv=None) -> int:
                          "Required for a meaningful quality check before production.")
     ap.add_argument("--stage", choices=("A", "B", "both"), default="both")
     ap.add_argument("--cryo", action="store_true",
-                    help="Match a --cryo sim (phonon σ ×0.65); affects recorded "
-                         "metadata only — calibration is taken from the tile zarrs.")
+                    help="Cryo phonon σ ×0.65 (default; flag is a no-op). Affects "
+                         "recorded metadata only — calibration comes from the tile zarrs.")
+    ap.add_argument("--room", action="store_true",
+                    help="Room-temperature phonon σ (×1.0) — match a --room sim.")
     ap.add_argument("--tile-dir", type=Path, default=None)
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args(argv)
 
     if args.toy and args.mini:
         ap.error("Pass --toy OR --mini, not both.")
+    if args.room and args.cryo:
+        ap.error("Pass --room OR --cryo, not both.")
 
     _setup_cuda_path()
-    dwf = 0.65 if args.cryo else P.PHONON_DWF_SCALE_DEFAULT
+    dwf = 1.0 if args.room else (0.65 if args.cryo else P.PHONON_DWF_SCALE_DEFAULT)
     if args.toy or args.mini:
         p = P.toy_params(dwf_scale=dwf)
     else:

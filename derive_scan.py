@@ -23,9 +23,9 @@ import params as P
 # params.py's __main__ fallback (47.88 x 70.01 x 73.93 A; beam = +Z).
 BOX_DIMS_A = (47.88, 70.01, 73.93)
 
-# What we're planning to switch to.
-N_TILES_TILED = 6          # 6x6 tiles of TILE_SIZE_A -> ~24x24 A scan window
-TILE_SIZE_A = P.TILE_SIZE_A  # 4.0
+# Mirrors params.py (kept here so the sweep below is self-contained).
+N_TILES_TILED = P.N_TILES_TILED   # 5 -> 5x5 tiles of TILE_SIZE_A -> ~20x20 A window
+TILE_SIZE_A = P.TILE_SIZE_A       # 4.0
 
 OVERFOCUS_NM_SWEEP = [1.0, 2.0, 5.0, 10.0]
 OVERLAP_SWEEP = [0.75, 0.85, 0.90, 0.95]
@@ -79,8 +79,8 @@ def main(argv=None) -> int:
     pad_a = 8.0
 
     print("=" * 78)
-    print("Scan-design analytical pass  (W2+W3 -- 6x6 tiles of "
-          f"{TILE_SIZE_A:.1f} A = {scan_extent_a:.0f} x {scan_extent_a:.0f} A window)")
+    print(f"Scan-design analytical pass  (W2+W3 -- {N_TILES_TILED}x{N_TILES_TILED} "
+          f"tiles of {TILE_SIZE_A:.1f} A = {scan_extent_a:.0f} x {scan_extent_a:.0f} A window)")
     print("=" * 78)
     print(f"  lambda            = {wavelength_a:.5f} A   (300 keV)")
     print(f"  alpha             = {P.CONVERGENCE_MRAD:.0f} mrad")
@@ -95,18 +95,25 @@ def main(argv=None) -> int:
           f"{PAPER_POSITIONS} positions")
     print()
 
-    hdr = (f"{'ovf':>5} {'ovl':>5} | {'FWHMeff':>8} {'step':>7} | "
-           f"{'pos/tile':>9} {'pos tot':>8} {'/paper':>7} | "
+    # 'ovl_tgt' = the TARGET_OVERLAP knob (fraction of effective FWHM used to set
+    # the step). 'ovl_lin' = the *realized* linear overlap of adjacent probe
+    # footprints, footprint Ø = 2*alpha*defocus (the geometric shadow disk).
+    # The realized overlap is what matters for ptychographic reconstructability
+    # (rule of thumb: keep it >= ~60-70%; the reference paper ran ~99%).
+    hdr = (f"{'ovf':>5} {'ovl_tgt':>7} | {'FWHMeff':>8} {'ftprtØ':>7} {'step':>7} "
+           f"{'ovl_lin':>8} | {'pos/tile':>9} {'pos tot':>8} {'/paper':>7} | "
            f"{'CBED disk':>10} | {'obj VRAM':>9} | {'sim h':>7} {'recon h':>8}")
     print(hdr)
     print("-" * len(hdr))
 
     for ovf_nm in OVERFOCUS_NM_SWEEP:
         overfocus_a = ovf_nm * 10.0
-        geom_spread_a = alpha_rad * overfocus_a
+        geom_spread_a = alpha_rad * overfocus_a            # disk radius
+        footprint_a = max(probe_fwhm_focused_a, 2.0 * geom_spread_a)  # disk diameter
         fwhm_eff_a = float(np.hypot(probe_fwhm_focused_a, geom_spread_a))
         for ovl in OVERLAP_SWEEP:
             step_a = (1.0 - ovl) * fwhm_eff_a
+            ovl_lin = max(0.0, 1.0 - step_a / footprint_a)
             n_axis = positions_per_tile_axis(step_a)
             pos_tile = n_axis * n_axis
             pos_tot = pos_tile * N_TILES_TILED * N_TILES_TILED
@@ -114,11 +121,60 @@ def main(argv=None) -> int:
             obj_vram_gb = recon_num_slices * ((scan_extent_a + pad_a) / px_a) ** 2 * 8 / 1e9
             sim_h = pos_tot * SEC_PER_POSITION_SIM / 3600.0
             recon_h = pos_tot * SEC_PER_POSITION_RECON / 3600.0
-            print(f"{ovf_nm:>5.1f} {ovl:>5.2f} | {fwhm_eff_a:>8.3f} {step_a:>7.3f} | "
+            print(f"{ovf_nm:>5.1f} {ovl:>7.2f} | {fwhm_eff_a:>8.3f} {footprint_a:>7.2f} "
+                  f"{step_a:>7.3f} {ovl_lin*100:>7.1f}% | "
                   f"{pos_tile:>9d} {pos_tot:>8d} {pos_tot/PAPER_POSITIONS:>6.2f}x | "
                   f"{cbed_disk_gb:>9.2f}G | {obj_vram_gb:>8.2f}G | "
                   f"{sim_h:>7.2f} {recon_h:>8.2f}")
         print("-" * len(hdr))
+
+    # ------------------------------------------------------------------
+    # Probe-vs-cell clearance check.
+    #
+    # An OVERFOCUSED probe has its crossover Δf ABOVE the entrance surface, so
+    # inside the sample it only ever diverges:  radius(z) = α·(Δf + z), with
+    # z = 0 at entrance and z = t at exit.  abTEM uses a periodic cell, so if
+    # the probe (at the worst-case scan corner, i.e. half the scan extent off
+    # the centre) has appreciable amplitude at a cell edge it WRAPS AROUND and
+    # corrupts the diffraction pattern.  The cell short axis (x ≈ 48 Å) is the
+    # binding constraint.  This is also why the reference paper could use ~20 nm
+    # overfocus and we can't: their α was ~5× smaller, so 2·α·Δf was ~5× smaller.
+    cx, cy = P.CENTER_X_A, P.CENTER_Y_A
+    bx, by, t = BOX_DIMS_A
+    half_scan = scan_extent_a / 2.0
+    print()
+    print("Probe-vs-cell clearance  (overfocused: probe widest at the EXIT surface)")
+    print(f"  cell (x×y) = {bx:.1f} × {by:.1f} Å ; thickness t = {t:.1f} Å ; "
+          f"scan centred at ({cx:.1f}, {cy:.1f}) Å ; scan box = "
+          f"[{cx-half_scan:.1f},{cx+half_scan:.1f}] × [{cy-half_scan:.1f},{cy+half_scan:.1f}] Å")
+    ghdr = (f"  {'ovf nm':>6} | {'probeØ in':>10} {'probeØ out':>11} | "
+            f"{'reach@out':>10} | {'x-overhang':>11} | {'%of probeØ':>11} | verdict")
+    print(ghdr)
+    print("  " + "-" * (len(ghdr) - 2))
+    for ovf_nm in OVERFOCUS_NM_SWEEP + [15.0, 20.0]:
+        df_a = ovf_nm * 10.0
+        r_in = alpha_rad * df_a                    # entrance probe radius
+        r_out = alpha_rad * (df_a + t)             # exit probe radius (worst case)
+        reach = half_scan + r_out                  # worst-case lateral reach from centre
+        x_lo, x_hi = cx - reach, cx + reach
+        overhang = max(0.0, 0.0 - x_lo, x_hi - bx)  # how far the probe edge pokes past the cell
+        frac = overhang / max(2 * r_out, 1e-9)      # as a fraction of the probe diameter
+        verdict = ("OK — fits" if overhang <= 0.0 else
+                   "OK — soft tail clipped" if frac < 0.10 else
+                   "MARGINAL — aliasing likely" if frac < 0.25 else
+                   "UNSAFE — probe wraps")
+        print(f"  {ovf_nm:>6.1f} | {2*r_in:>9.1f}Å {2*r_out:>10.1f}Å | "
+              f"{reach:>9.1f}Å | {overhang:>10.1f}Å | {frac*100:>10.0f}% | {verdict}")
+    print("  Reading it: 'reach' = worst-case (scan-corner) lateral distance from "
+          "the scan centre to the probe edge at the EXIT surface; 'x-overhang' = "
+          "how far that pokes past the periodic cell's short (x≈48 Å) axis. A few "
+          "% of the probe diameter is a low-amplitude tail (tolerable); >~25% means "
+          "real aliasing/wraparound. Note the EXIT probe radius α·(Δf+t) has a "
+          "fixed α·t ≈ 7.4 Å piece from the 74 Å thickness ALONE — that plus half "
+          "the scan extent is the floor; overfocus only adds to it. To go to the "
+          "paper's ~20 nm you'd need a wider abTEM cell (lateral vacuum padding → "
+          "~(W/48)² slower FFT + free in-plane surfaces near the scan edges) or a "
+          "smaller scan window (5×5 or 4×4 tiles).")
 
     print()
     print("Guidance: pick the (overfocus, overlap) with paper-like position count "
