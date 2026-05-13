@@ -17,8 +17,8 @@
     "filters": null,
     "order": "C",
     "shape": [
-        8,
-        8,
+        16,
+        16,
         65,
         95
     ],

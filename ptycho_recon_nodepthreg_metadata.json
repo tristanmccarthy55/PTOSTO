@@ -1,0 +1,20 @@
+{
+  "num_slices": 74,
+  "slice_thickness_a": 0.9991171069485758,
+  "real_space_thickness_a": 73.93466591419461,
+  "scan_step_a": 0.5001442041319933,
+  "reconstruction_pixel_size_a": 0.050696392230191976,
+  "bf_bin": 15,
+  "bf_eff_pixel_mrad": 6.167202408564567,
+  "overfocus_a": 50.0,
+  "polar_C10": 50.0,
+  "energy_ev": 300000.0,
+  "convergence_mrad": 100.0,
+  "diff_intensities_shape": [
+    64,
+    64
+  ],
+  "phonon_num_configs": 8,
+  "sim_slice_thickness_a": 1.0,
+  "loaded_from_first_tile": "C:\\Users\\Trist\\HyperSpy-bundle\\MY HYPERSPY CODE\\PTOSTO\\tile00_bf.zarr"
+}

@@ -54,13 +54,14 @@ TILE_SIZE_A: float = 4.0      # one tile is TILE_SIZE_A × TILE_SIZE_A
 SCAN_WIDTH_A: float = 40.0    # legacy nominal window; derive() now uses
                               # N_TILES_TILED·TILE_SIZE_A as the real window
 # Fraction of (effective) probe FWHM that successive scan positions overlap.
-# Bumped 0.75 -> 0.90 (W2): the bigger overfocus inflates the effective FWHM,
+# Bumped 0.75 -> 0.95 (W2): the bigger overfocus inflates the effective FWHM,
 # so at 0.75 the derived step (= (1-overlap)·FWHM) would coarsen to several Å
-# and the position count would collapse. 0.90 here ⇒ ≈0.5 Å step, ~95% realized
-# linear overlap, ≈64 pos/tile ⇒ ≈1600 positions over 5×5 tiles — a real-scale
-# diagnostic run in ~2 h. Raise to 0.95 (≈0.25 Å step, ~97.5%, ≈6400 positions,
-# > the paper's ~4096) for the final run once the diagnostic shows depth signal.
-TARGET_OVERLAP: float = 0.90
+# and the position count would collapse. 0.95 here ⇒ ≈0.25 Å step, ~97.5%
+# realized linear overlap, ≈256 pos/tile ⇒ ≈6400 positions over 5×5 tiles
+# (> the reference paper's ~4096) — the dataset we want for the fold_slice/
+# PtychoShelves recon. ~6 h sim. Drop to 0.90 (≈0.5 Å step, ≈1600 positions,
+# ~4× faster) for a quick diagnostic.
+TARGET_OVERLAP: float = 0.95
 
 # Multislice simulation slice thickness. Existing 0.31 Å is over-fine; 1.0 Å
 # is sufficient at 100 mrad and gives a ~3× speedup.

@@ -7,7 +7,7 @@
     "n_tiles_tiled": 5,
     "num_slices_sim": 74,
     "overfocus_a": 50.0,
-    "overlap_linear": 0.9499855795868006,
+    "overlap_linear": 0.9749927897934003,
     "phonon_dwf_scale": 0.65,
     "phonon_num_configs": 8,
     "phonon_sigmas_a": {
@@ -18,7 +18,7 @@
     },
     "probe_disk_diameter_a": 10.0,
     "real_space_thickness_a": 73.93466591419461,
-    "scan_step_a": 0.5001442041319933,
+    "scan_step_a": 0.25007210206599695,
     "scan_window_a": 20.0,
     "sim_slice_thickness_a": 1.0,
     "tile_i": 1,

@@ -159,8 +159,15 @@ def _calibrate(datacube, r_pixel_size: float, q_pixel_size: float) -> None:
 def reconstruct(p: P.Params, *, stage: str = "both",
                 tile_dir: Path | None = None,
                 out_path: Path | None = None,
-                tile_pairs: list[tuple[int, int]] | None = None) -> Path:
-    """Run multislice ptychography. Returns the output zarr path."""
+                tile_pairs: list[tuple[int, int]] | None = None,
+                depth_reg: bool = True) -> Path:
+    """Run multislice ptychography. Returns the output zarr path.
+
+    ``depth_reg=False`` turns OFF the Stage-B kz-low-pass filter and the
+    TV-denoiser — an ablation to test whether those priors (which suppress
+    high-kz content = depth structure) are what's pinning the result to a
+    z-uniform projection.
+    """
     import py4DSTEM
 
     tile_dir = tile_dir or P.PROJECT_ROOT
@@ -230,6 +237,10 @@ def reconstruct(p: P.Params, *, stage: str = "both",
         crop_patterns=True,
         diffraction_intensities_shape=p.recon_diff_intensities_shape,
         store_initial_arrays=True,
+        force_com_rotation=0.0,          # abTEM scan & detector are aligned by
+                                         # construction; the auto-fit picks up
+                                         # a few-degree bias from the anisotropic
+                                         # 65×95→65×65 CBED resampling. Force 0.
     )
 
     stage_a_ran = False
@@ -277,8 +288,10 @@ def reconstruct(p: P.Params, *, stage: str = "both",
         except Exception:
             pass
 
+        if not depth_reg:
+            print("  [ablation] Stage B kz-low-pass + TV-denoise DISABLED")
         t0 = time.time()
-        ptycho.reconstruct(
+        recon_kwargs = dict(
             num_iter=96,
             max_batch_size=p.recon_max_batch_size,
             step_size=0.05,            # 0.1 let the object amplitude run wild on small data
@@ -290,12 +303,6 @@ def reconstruct(p: P.Params, *, stage: str = "both",
             constrain_probe_amplitude=True,   # stabilises probe on release from fix_probe
             pure_phase_object=True,    # PTO/STO is ~pure phase; pinning |obj|=1 kills the
                                        # amplitude/phase degeneracy that ate the depth info
-            kz_regularization_filter=True,
-            kz_regularization_gamma=0.2,   # ablated up from 0.02 — needed to break the
-                                           # flat-projection minimum (std ratio 1.07 -> 1.81)
-            tv_denoise=True,               # direct piecewise-depth prior (layered/vortex sample)
-            tv_denoise_weights=[1e-3, 1e-4],  # [kz, kxy] — strong z smoothing toward
-                                              # piecewise-constant depth, gentle in-plane
             identical_slices=False,
             gaussian_filter=True,
             gaussian_filter_sigma=0.1,
@@ -303,6 +310,15 @@ def reconstruct(p: P.Params, *, stage: str = "both",
             fix_potential_baseline=True,
             store_iterations=False,
         )
+        if depth_reg:
+            recon_kwargs.update(
+                kz_regularization_filter=True,
+                kz_regularization_gamma=0.2,   # ablated up from 0.02 — moved std ratio
+                                               # (envelope) but never the kz-FRC
+                tv_denoise=True,               # piecewise-depth prior (layered/vortex sample)
+                tv_denoise_weights=[1e-3, 1e-4],  # [kz, kxy]
+            )
+        ptycho.reconstruct(**recon_kwargs)
         print(f"Stage B: {(time.time()-t0)/60:.1f} min")
         _diagnose_object(ptycho, "after Stage B")
 
@@ -371,6 +387,9 @@ def main(argv=None) -> int:
                          "recorded metadata only — calibration comes from the tile zarrs.")
     ap.add_argument("--room", action="store_true",
                     help="Room-temperature phonon σ (×1.0) — match a --room sim.")
+    ap.add_argument("--no-depth-reg", action="store_true",
+                    help="Ablation: disable the Stage-B kz-low-pass + TV-denoise "
+                         "priors. Writes to *_nodepthreg.zarr unless --out given.")
     ap.add_argument("--tile-dir", type=Path, default=None)
     ap.add_argument("--out", type=Path, default=None)
     args = ap.parse_args(argv)
@@ -387,20 +406,23 @@ def main(argv=None) -> int:
     else:
         p = P.derive(dwf_scale=dwf)
 
+    suffix = "_nodepthreg" if args.no_depth_reg else ""
     if args.mini:
         tile_pairs = [(0, 0), (0, 1), (1, 0), (1, 1)]
         if args.out is None:
-            args.out = P.PROJECT_ROOT / "ptycho_recon_mini.zarr"
+            args.out = P.PROJECT_ROOT / f"ptycho_recon_mini{suffix}.zarr"
     elif args.toy:
         tile_pairs = [(1, 1)]
         if args.out is None:
-            args.out = P.PROJECT_ROOT / "ptycho_recon_toy.zarr"
+            args.out = P.PROJECT_ROOT / f"ptycho_recon_toy{suffix}.zarr"
     else:
         tile_pairs = None  # full n_tiles_tiled × n_tiles_tiled grid
+        if args.out is None:
+            args.out = P.PROJECT_ROOT / f"ptycho_recon{suffix}.zarr"
 
     print(P.summary(p))
     reconstruct(p, stage=args.stage, tile_dir=args.tile_dir, out_path=args.out,
-                tile_pairs=tile_pairs)
+                tile_pairs=tile_pairs, depth_reg=not args.no_depth_reg)
     return 0
 
 
