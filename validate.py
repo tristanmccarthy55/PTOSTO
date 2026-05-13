@@ -1,18 +1,19 @@
 """Quantitative validation of a multislice ptychography reconstruction.
 
-Compares ``ptycho_recon.zarr`` against the abTEM ground-truth potential and
-checks two simple resolution proxies:
+Checks on the reconstructed object_phase volume (``ptycho_recon*.zarr``):
 
-* Per-slice Pearson r between recon phase and the projected potential at the
-  matching depth (laterally Gaussian-blurred to the recon's resolution).
-* Mean Fourier shell correlation along kz only (depth-direction FRC) on the
-  reconstructed phase volume.
+* NaN gate (any NaN ⇒ reconstruction diverged ⇒ hard fail).
+* Per-slice std min/max ratio (= depth-contrast envelope; weak test — passes
+  on a projection that has a smooth reconstruction-confidence envelope).
+* Mean Fourier shell correlation along kz (depth-direction FRC) — the
+  meaningful test for "is there real depth structure?".
+* ``track_pb_columns`` — sub-pixel column centroids per slice, written to
+  CSV for downstream comparison against the POSCAR displacements.
 
-The third planned check — vortex column tracking against the POSCAR
-displacements — is wired up as ``track_pb_columns`` and writes a CSV of
-sub-pixel column centroids per slice. Comparing those to the input POSCAR's
-Pb displacements is left as the user-driven validation since it requires
-deciding which axis to compare against (vortex axis vs perpendicular).
+Plotting: a strip-averaged XZ/YZ summary (avg over ±1/3 perovskite UC in the
+orthogonal in-plane axis) + an XY-slice montage at evenly-spaced z, with a
+"phase − z-mean" row that's flat under a pure projection and shows any real
+depth modulation as a column-aligned pattern.
 
 Usage::
 
@@ -67,38 +68,6 @@ def _kz_frc(phase_zyx: np.ndarray, n_shells: int = 64) -> tuple[np.ndarray, np.n
     Fb_kx = Fb[:, n // 2, :]
     kz = np.fft.fftshift(np.fft.fftfreq(phase_zyx.shape[0]))
     return kz, np.real(Fa_kx * np.conj(Fb_kx)).mean(axis=1)
-
-
-def _projected_potential(p: P.Params, recon_shape, *, slice_thickness: float):
-    """Return the abTEM-projected potential at the same Z grid as the recon.
-
-    Returns array of shape (recon_nz, recon_ny, recon_nx). Heavy: builds the
-    full potential once.
-    """
-    import abtem
-    from abtem import FrozenPhonons
-    nz, ny, nx = recon_shape
-    atoms = P.load_atoms()
-    fp = FrozenPhonons(atoms, num_configs=1, sigmas=p.phonon_sigmas_a, seed=0)
-    pot = abtem.Potential(fp, sampling=p.bf_eff_pixel_mrad / 100.0,
-                           slice_thickness=slice_thickness,
-                           parametrization="kirkland", device="cpu")
-    arr = pot.build().compute().array  # (n_sim_slices, gy, gx)
-    arr = np.asarray(arr).real
-    # Re-bin along z to nz, then crop/pad along XY to (ny, nx).
-    z_bins = np.linspace(0, arr.shape[0], nz + 1).astype(int)
-    out = np.empty((nz, ny, nx), dtype="float32")
-    gy, gx = arr.shape[1:]
-    cy0 = max(0, gy // 2 - ny // 2); cx0 = max(0, gx // 2 - nx // 2)
-    cy1 = cy0 + ny; cx1 = cx0 + nx
-    if cy1 > gy or cx1 > gx:
-        # Pad with zeros if recon is wider than potential.
-        pad_y = max(0, cy1 - gy); pad_x = max(0, cx1 - gx)
-        arr = np.pad(arr, ((0, 0), (0, pad_y), (0, pad_x)))
-    for i in range(nz):
-        block = arr[z_bins[i]:max(z_bins[i] + 1, z_bins[i + 1])].sum(axis=0)
-        out[i] = block[cy0:cy0 + ny, cx0:cx0 + nx]
-    return out
 
 
 def track_pb_columns(phase_zyx: np.ndarray, *, threshold_factor: float = 0.6,

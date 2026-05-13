@@ -3,27 +3,34 @@
 
 Differences from the original notebook (Cell 3):
 
-1. ``polar_parameters['C10'] = -OVERFOCUS_A``  (was ``+`` in the broken copy;
-   the ``WORKS`` notebook used ``-``). py4DSTEM uses ``C10 = -defocus`` so a
-   probe focused 10 Å above the sample (overfocus, abTEM defocus = +10 Å)
-   has C10 = -10 Å.
+1. ``polar_parameters['C10'] = +OVERFOCUS_A``. abTEM uses ``defocus = -C10``;
+   the sim sets ``probe.aberrations.defocus = -OVERFOCUS_A`` (negative
+   defocus = overfocus, crossover above the entrance surface — verified by
+   ``test_probe_focus.py``). So the matched py4DSTEM C10 is ``+OVERFOCUS_A``.
 2. ``crop_patterns=True`` with ``diffraction_intensities_shape`` set so the
    working FFT fits in 8 GB VRAM.
 3. Two-stage reconstruction:
-   - Stage A: ``fix_probe=True``, ``identical_slices=True``, hard kz reg.
-     Force the solver onto the depth-uniform manifold first.
-   - Stage B: release everything, fit aberrations, lighter kz reg, TV denoise.
-4. ``kz_regularization_filter=True`` (was ``False`` — depth prior was off).
-5. ``num_slices`` matches the optical depth resolution (~1 Å/slice) instead of
-   half of the simulation slice count.
-6. Calibration ``Q_pixel_size`` recomputed from the correct beam axis and the
-   chosen detector bin, not from ``BOX_Y / bin``.
+   - Stage A: ``fix_probe=True``, kz-reg off (it diverges to NaN on thin
+     data at this stage), short gaussian smoothing, baseline fixed.
+   - Stage B: release probe, fit aberrations, ``pure_phase_object=True``,
+     kz-reg + TV-z on (off when ``--no-depth-reg``).
+4. ``num_slices`` ≈ ``box_z / 1 Å`` (matches the ~2 Å optical depth limit at
+   2× oversampling).
+5. Calibration: ``R_pixel_size`` from sim metadata (``scan_step_a``);
+   ``Q_pixel_size`` from ``bf_eff_pixel_mrad / (1000·λ)``. Neither uses the
+   notebook's ``BOX_Y / bin`` geometric guess.
+6. ``force_com_rotation=0.0``: abTEM scan and detector are aligned by
+   construction, so we skip py4DSTEM's auto-fit (which gets biased a few
+   degrees by the anisotropic 65×95→65×65 CBED resampling).
+7. CUDA mempool flushed between Stage A and Stage B (else py4DSTEM can
+   deadlock at iter 0 on a fragmented heap).
 
 Usage::
 
     python reconstruct_ptycho.py --toy
     python reconstruct_ptycho.py --stage both
     python reconstruct_ptycho.py --stage A          # warm-up only
+    python reconstruct_ptycho.py --no-depth-reg     # ablation: priors off
 """
 from __future__ import annotations
 
