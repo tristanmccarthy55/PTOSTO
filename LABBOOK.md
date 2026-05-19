@@ -275,4 +275,140 @@ Total disk for production tiles: ~200 MB. Stitched 4D in RAM: 0.16 GB.
 
 ---
 
-*End of lab book — 2026-05-13.*
+## 12. W1 fold_slice port — smoke ladder → production (2026-05-18/19)
+
+Same 6400-position cryo data as W2 production, exported to fold_slice's HDF5
+schema via `export_to_foldslice.py --pipeline`. CBED square-resampled 65×95 →
+65×65 at the coarse mrad/px (= what py4DSTEM was already seeing — clean
+engine-vs-engine A/B). Data rescaled to ~10⁴ counts/frame (abTEM emits
+probability units, fold_slice's L1 metric needs counts or it NaNs at iter 1).
+
+### 12.1 Smoke ladder — what each test isolated
+
+Each smoke ran 3 iter / stage (≤ 5 min). The point was diagnosing the
+NaN-at-iter-1 failure mode of the early full-config attempts, by collapsing
+the recipe one knob at a time.
+
+| Config | Nprobe | Nlayers | δz (Å) | Outcome | What it ruled out |
+|---|---:|---:|---:|---|---|
+| `baseline` | 1 | 1 | 73.9 | ✅ both stages clean | data + probe + scan setup all OK |
+| `multimode` | 4 | 1 | 73.9 | ✅ (untested in full but inferred) | (mixed-mode probe is not the issue) |
+| `multislice` (74 layers) | 1 | 74 | 1.0 | ❌ NaN iter 1 | **fine slices break Fresnel propagator at our 100 mrad α** |
+| `multislice37` | 1 | 37 | 2.0 | ✅ both stages clean | confirms 2 Å = dz_optical = λ/α² is the floor |
+| **Full Yu recipe** | 4 | 37 | 2.0 | ✅ both stages clean (5.2 min) | pipeline verified end-to-end |
+
+Round-trip of every successful smoke through `validate.py` passed code-path
+(no NaN) and the per-slice-std gate (1.7–2.7 ratio).
+
+### 12.2 Production attempts and what each crash taught us
+
+All at Nprobe=4, Nlayers=37, δz=2.0 Å, Stage A 40 iter + Stage B 200 iter.
+**~3.3 h** wall-clock on the 8 GB 2070 SUPER (~42 s/iter).
+
+| # | `probe_position_search` | `probe_change_start` (Stage B) | Outcome | Diagnosis |
+|---|---:|---:|---|---|
+| 1 | **20** | 1 | ❌ crashed Stage B iter 20 in `gradient_projection_solver` | Position refinement at iter 20 diverges on perfect (sim) positions — Yu's sim recipe: `=inf` |
+| 2 | inf | **1** | ❌ NaN Stage B iter 1 (LSQML) | 40 iter of fixed-probe Stage A over-converged the object; first probe-release step in Stage B overshot to NaN. Yu's sim recipe: probe also `=inf` (perfect probe = never refine) |
+| 3 | inf | inf | ✅ both stages, **2 h 48 min**, .mat saved | Full Yu sim recipe — fixed probe + fixed positions, object-only refinement |
+
+So the operative recipe for this sim-data setup is the strictly conservative
+end of Yu's reply: **don't refine what you already know**. With abTEM-constructed
+probe and grid-perfect positions, both refinement loops are net-negative.
+
+### 12.3 fold_slice patches required to get our data through
+
+- `+engines/+GPU_MS/+shared/find_geom_correction.m` lines 60, 71, 81: wrapped
+  `self.Np_p/2` in `floor()` so an **odd CBED size** (65) doesn't break
+  `gpuArray/zeros` (which requires integer dims). PSO_science example used
+  Ndp=128 so the bug never fired upstream.
+- Project-side `recon.m`: `eng.save_results_every = eng.number_iterations`
+  (fold_slice's default `save_every=50` was suppressing all saves when
+  smoke runs had Niter < 50).
+
+### 12.4 W1 result
+
+`python validate.py --recon ptycho_recon_foldslice.zarr`:
+
+- **code-path**: PASS (no NaN)
+- **per-slice std ratio**: 1.76 (FAIL, gate ≥ 2.0 — but always the weaker metric per the handover, "envelope, not structure")
+- **kz-FRC ratio**: **0.087** (PASS, gate ≥ 0.05). py4DSTEM's MSPT run on the *identical data* gave **6.8 × 10⁻⁶**. So fold_slice's LSQ-ML engine is **~13 000× better on the strongest depth-structure metric** without changing the data, the cell, or the slice count.
+
+Visually (`validation_plots/ptycho_recon_foldslice_summary.png` and
+`_slices.png`): the XZ-deviation panel now shows **column-localised vertical
+streaks** rather than the smooth anti-symmetric envelope py4DSTEM produced;
+the per-slice XY montages show atomic-column-resolved positive/negative dots
+in the phase-minus-z-mean view. Some residual anti-symmetric character is
+still visible (red-dominant z≈1–7 → blue-dominant z≈27–34) but is *carried
+on top of* real per-column structure, not replacing it.
+
+**Interpretation**: the engine port did exactly what § 8 hypothesised — LSQ-ML
++ mixed-mode probe + variable-probe broke through the gradient-descent failure
+that pinned py4DSTEM to a z-uniform projection. The residual symmetric pattern
+is the kind of artefact that **tilts (W4, ±10–15°)** are designed to break.
+Single-perpendicular-scan at 100 mrad / 74 Å gets to "real-but-not-clean"
+3D structure; clean atomic-layer separation likely needs tilts on top.
+
+### 12.5 L-curve regularisation experiments (2026-05-19)
+
+Three L-curve sweeps (Stage A 40 iter + Stage B 10/20/.../80 iter,
+save_results_every=10, TIFF analysis via `lcurve.py`):
+
+| Sweep | reg_mu | regularize_layers | kz-FRC @10 | kz-FRC @80 | Shape |
+|---|---:|---:|---:|---:|---|
+| #1 | 0 | 0 | 0.66 | 0.63 | monotonic decay |
+| #2 | 1e-3 | 0.01 | 0.55 | 0.53 | interior peak at iter 20 (kz-FRC) / 40 (std) |
+| #3 | 1e-3 | 0 | 0.66 | 0.63 | monotonic decay (= #1) |
+
+Findings:
+
+1. **`reg_mu` alone has no measurable effect** at 1e-3 (sweeps #1 and #3
+   are statistically identical). Either the setting is too weak, or
+   Tikhonov on the object phase isn't the right regulariser for this
+   problem.
+2. **`regularize_layers = 0.01` IS the only thing that introduces a clean
+   L-curve knee** (sweep #2), but it bought that knee by suppressing
+   the depth signal we're trying to detect — direct validate.py round-trip
+   of the iter-30 .mat gave kz-FRC = 0.047 (vs 0.087 for the no-reg
+   200-iter prod). Visually atomic columns are cleaner in the XY slices
+   but the XZ-deviation panel becomes mottled noise instead of the
+   column-localised vertical streaks the no-reg result showed.
+3. **The "monotonic decay" in #1/#3 is a real problem, not a measurement
+   artefact**: the engine is over-fitting multislice gauge swaps on our
+   noiseless abTEM data (no Poisson noise to break the degeneracy as it
+   would in Yu's experimental data). But the cure (layer symmetrisation)
+   is worse than the disease.
+
+**Conclusion: recon-side tuning has reached its limit on this data.** The
+recon is fundamentally under-determined (~10:1 unknowns:constraints per
+slice), so spurious gauge swaps amplify with iter and there's no
+regularisation that suppresses them without also killing the real
+depth-localised structure. Better data conditioning is required — i.e.
+Phase C of the original W1 plan (cell extension + 20 nm overfocus +
+denser scan to get the same overlap-diversity-per-pixel as the Lei & Wang
+paper). Handover spec: [`W1C_PROMPT.md`](W1C_PROMPT.md).
+
+### 12.6 New wall-clock entries
+
+| Run | Sim time | Recon time | Notes |
+|---|---|---|---|
+| W1 smoke ladder (5× ~5 min each) | 0 | ~25 min | Diagnosis of NaN modes |
+| W1 production attempt 1 | 0 | ~33 min (crashed at Stage B iter 20) | Position-refinement diverged |
+| W1 production attempt 2 | 0 | ~32 min (crashed at Stage B iter 1) | Probe-release overshot |
+| W1 production attempt 3 (success) | 0 | **2.80 h** | kz-FRC PASS, .mat saved |
+| W1 L-curve sweep #1 (no reg, 80 iter) | 0 | ~91 min | monotonic decay confirmed |
+| W1 L-curve sweep #2 (reg_mu + layer_reg) | 0 | ~91 min | knee at iter 20-40 but kz-FRC dropped |
+| W1 L-curve sweep #3 (reg_mu only) | 0 | ~91 min | same as #1 — reg_mu no-op at 1e-3 |
+| W1 optimised re-run (Stage A 40 + Stage B 30 + reg #2) | 0 | ~52 min | validated: std-ratio improved but kz-FRC dropped |
+
+CUDA 11.2 (MATLAB R2022b bundled) + MSVC v142 toolset; `mexcuda` chain
+required ~6 hours of debugging (Visual Studio Build Tools registration
+broken on install → manual `HKLM\SOFTWARE\Microsoft\VisualStudio\SxS\VS7`
+write, MATLAB mexopts XMLs hard-coded for VS Enterprise/Pro/Community
+only → patched to recognise BuildTools, CUDA 11.2 vs MSVC v143 toolset
+incompatibility → forced v142 via `vcvars_ver=14.29` + uninstall v143 +
+drop a `vcvars64.bat` shim at the path nvcc 11.2 expects). Worth knowing
+that "MATLAB + CUDA + fold_slice on Windows" is real work, not a default.
+
+---
+
+*End of lab book — last update 2026-05-19 (W1 added).*

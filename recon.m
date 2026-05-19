@@ -279,8 +279,16 @@ eng. probe_modes  = p.probe_modes;
 eng. object_change_start = 1;
 eng. probe_change_start = eng.number_iterations;  % Stage A: probe fixed entire stage (warmup)
 
-% regularizations -- [Yu]: defaults for reg_mu, delta
-eng. reg_mu = 0;
+% regularizations -- Yu reply gave defaults (=0), but the L-curve sweep
+% showed BOTH per-slice std and kz-FRC ratios drop monotonically with iter.
+% Hypothesis: multislice has a gauge degeneracy (phase swappable between
+% adjacent slices without changing diffraction prediction). On Yu's
+% experimental data, Poisson noise breaks the degeneracy. On our noiseless
+% abTEM data the engine has nothing to constrain it -> spurious gauge
+% swaps amplify with iter. Trial: gentle Tikhonov + weak layer-symmetry
+% regularisation. PSO_science example used regularize_layers=1; we use 0.01
+% because 1 would force layers identical = the failure mode we're testing for.
+eng. reg_mu = 1e-3;
 eng. delta = 0;
 eng. positivity_constraint_object = 0;
 eng. apply_multimodal_update = false;
@@ -310,11 +318,11 @@ eng. update_pos_weight_every = inf;
 
 % Multilayer
 eng. delta_z = delta_z * ones(Nlayers, 1);
-% [Yu]: defaults. fold_slice source: 0 = no regularisation (layers free to
-% differ), ~1 = strong symmetrisation (layers pulled toward identical).
-% We want layers to differ (that's the depth structure we're testing for),
-% so use 0. PSO paper used 1 but on a thinner sample where symmetrisation
-% prevents per-layer noise overfit without killing depth structure.
+% Layer-symmetrisation OFF for sweep #3. The 0.01 setting in the previous
+% sweep killed kz-FRC (0.087 -> 0.047) because it literally penalises
+% slice-to-slice differences = our depth signal. Hypothesis: reg_mu alone
+% (in-plane Tikhonov) is enough to break the gauge degeneracy without
+% directly suppressing depth structure.
 eng. regularize_layers = 0;
 eng. preshift_ML_probe = false;
 eng. layer4pos = [];
@@ -366,12 +374,11 @@ if smoke_iter_override > 0
     eng. probe_position_search = inf;          % smoke: positions fixed (sim recipe)
     fprintf('[SMOKE] Stage B iterations overridden to %d\n', smoke_iter_override);
 else
-    eng. number_iterations = 200;              % [Yu]: 40-200; production = 200
-    % [Yu, sim recipe]: simulation data has perfect positions -> set search
-    % to number_iterations (= never refine). Position refinement on perfect
-    % positions diverges gradient_projection_solver around iter 20 (observed
-    % in the first prod run). Re-enable to "20" for experimental data only.
-    eng. probe_position_search = inf;
+    % Sweep #3: reg_mu=1e-3 ONLY (regularize_layers=0). Looking for whether
+    % Tikhonov alone gives a clean L-curve AND preserves kz-FRC > 0.087.
+    % Bumping back to 80 iter to see the full curve.
+    eng. number_iterations = 80;
+    eng. probe_position_search = inf;          % [Yu, sim recipe]: never refine
 end
 eng. asize_presolve = [];
 eng. grouping = 32;                            % [Yu]: GPU-mem limited; 32 fits 8 GB
@@ -380,7 +387,9 @@ eng. grouping = 32;                            % [Yu]: GPU-mem limited; 32 fits 
 % deeply converged the object with the fixed probe, the first probe-update
 % step overshot to NaN. For experimental data, set this back to 20.
 eng. probe_change_start = inf;
-eng. save_results_every = eng.number_iterations;   % save at final iter
+% L-curve sweep mode: dump every 10 iter for snapshots at 10, 20, ..., 80.
+% Switch back to `eng.number_iterations` for a final single-iter save.
+eng. save_results_every = 10;
 
 [eng.fout, p.suffix] = generateResultDir(eng, resultDir);
 [p, ~] = core.append_engine(p, eng);
