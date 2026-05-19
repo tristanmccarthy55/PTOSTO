@@ -16,6 +16,34 @@ Read in order:
 
 Plan the following work in a single cohesive plan file. Run in plan mode. Use AskUserQuestion to resolve ambiguity in platform or scope.
 
+**Important sequencing note:** the very first deliverable of this plan must be **Phase 0 (below)** — a concrete question list / short email draft for Yu Lei. He's down the hall and Phases A–E all depend on inputs only he can give cheaply (recommended fold_slice branch, MATLAB version, working param struct for a similar perovskite system). Get that human-element ask out the door *before* working through the technical phases, so his reply is already in the inbox by the time the plan needs it. Do not bury this at the end.
+
+## Phase 0 — what to ask Yu Lei (FIRST deliverable, today)
+
+Produce a 5-minute email draft (or talking-points if I'd rather walk to his desk) — tight, scannable, prioritised. The plan should write this as a separate small markdown file (`yu_lei_questions.md`) so I can edit lightly and send. Refine and reorder the seed list below; don't just paste it — the plan agent should think about what's actually unknowable from the paper alone.
+
+**Seed question list (refine, don't paste verbatim):**
+
+*Install / build (5 min answer):*
+- Which fold_slice fork / branch does your group actually run? Yi Jiang's `main`, or an internal copy with patches?
+- MATLAB version that works (R2021a-ish? newer?).
+- Do you run on the campus Linux cluster or a local Windows / Linux box? Is there a working install I could borrow access to before I build my own?
+
+*Recon params for a similar system (the real ask):*
+- For a thick (74 Å) PTO6/STO6 labyrinth at 300 keV, 100 mrad convergence, 5 nm overfocus, cryo phonons, 6400 scan positions over 20 × 20 Å, what's your starting engine struct? Specifically: LSQ-ML variant, Stage A / Stage B iteration counts, position-refinement step size & schedule, momentum β, mixed-state probe modes, gaussian / TV regularisation.
+- Detector-rotation refinement — free or fixed? (Our abTEM data has known-zero detector rotation by construction.)
+- Per-axis Q-pixel calibration in fold_slice — is the HDF5 struct OK with non-square CBED (ours is natively 65 × 95 px at ~6.17 mrad/px vs ~4.22 mrad/px), or do you pre-rectify?
+
+*Science / sanity (gut-check the whole approach):*
+- Our py4DSTEM single-perpendicular-scan recon collapses to a z-uniform projection plus an **anti-symmetric depth-mode** (deviation positive in z ≈ 20–35, negative in z ≈ 45–65, at the same column positions). Is that a known py4DSTEM-MSPT signature, and does LSQ-ML routinely break it on similar-thickness samples?
+- At our 100 mrad convergence (vs your paper's 21 mrad) — does single-perpendicular-scan have any realistic shot at atomic-layer depth in a 74 Å sample, or should I plan tilts (W4) from the start?
+- Cryo σ scaling — your paper notes depth res is "sensitive to lattice vibrations". What σ values did you use, and from what source?
+
+*Practical:*
+- Anything specific to ferroelectric / heavy-Pb columns (dynamical scattering) that bit you and isn't in the paper?
+
+Email draft should be ≤ 200 words and lead with the two highest-leverage asks (working param struct + single-scan-vs-tilts gut check). Everything else is a nice-to-have he can answer in a sentence each.
+
 ## Phase A — build / install
 
 fold_slice on Windows vs the campus Linux cluster. MATLAB version requirements. Whether to use Yi Jiang's main branch or a paper-specific fork.
@@ -72,10 +100,11 @@ and get the same six-panel summary (per-slice std, log kz-FRC, per-pixel std alo
 
 ## Deliverable
 
-Write the plan to your plan file. Do not implement yet. Specifically pin down:
+Write the plan to your plan file. Do not implement yet. Output in this order:
 
+0. **First**: `yu_lei_questions.md` — short email / talking-points draft for Yu Lei. See Phase 0. This is the only artefact you produce *before* writing the rest of the plan, so I can send it / walk to his desk while you finish.
 1. fold_slice install / build path (Windows vs cluster, MATLAB version).
-2. The export-bridge file format (we want exact HDF5 dataset names + per-axis Q calibration).
+2. The export-bridge file format (we want exact HDF5 dataset names + per-axis Q calibration).111111
 3. The supercell-extension code change (which axis is sandwich vs bread, what `params.py` API).
 4. The starting recon parameter struct (placeholders, to be filled by Yu/Peng).
 5. The validation round-trip (zarr layout + how to feed it back to `validate.py`).

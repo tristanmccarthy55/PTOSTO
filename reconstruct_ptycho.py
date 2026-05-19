@@ -136,21 +136,33 @@ def load_and_stitch(tile_dir: Path, p: P.Params,
 
     print(f"Stitched: {out.shape} ({out.nbytes/1e9:.2f} GB in RAM)")
 
-    # py4DSTEM requires equal resampling factors on both diffraction axes.
-    # The CBED is non-square because box_x ≠ box_y: after K-binning the two
-    # axes have different mrad/px (6.17 vs 4.22 here). Zoom the finer axis
-    # down to match the coarser one — this preserves total angular coverage
-    # and makes both axes equal to p.bf_eff_pixel_mrad (the coarser value).
-    Sdy, Sdx = out.shape[2], out.shape[3]
-    if Sdy != Sdx:
-        from scipy.ndimage import zoom as _zoom
-        sq = min(Sdy, Sdx)
-        out = _zoom(out, [1.0, 1.0, sq / Sdy, sq / Sdx],
-                    order=1).astype("float32")
-        print(f"  CBED resampled to square {sq}×{sq} (was {Sdy}×{Sdx}; "
-              f"both axes now ~{metadata.get('bf_eff_pixel_mrad', '?'):.2f} mrad/px)")
-
+    # Native (non-square) CBED is returned as-is. py4DSTEM needs square,
+    # so its call site applies `_resample_cbed_to_square()` below. The
+    # fold_slice exporter consumes this native form directly so per-axis
+    # Q-pixel calibration is preserved.
     return out, metadata
+
+
+def _resample_cbed_to_square(data_4d: np.ndarray) -> np.ndarray:
+    """py4DSTEM-only: coerce non-square CBED to square at the coarser mrad/px.
+
+    The CBED is non-square because box_x ≠ box_y: after K-binning the two
+    diffraction axes have different mrad/px (≈6.17 vs ≈4.22 here). Zoom the
+    finer axis down to match the coarser one — preserves total angular
+    coverage and makes both axes equal to ``p.bf_eff_pixel_mrad`` (coarser).
+
+    fold_slice can handle non-square CBED with per-axis Q calibration, so
+    its export path must NOT call this.
+    """
+    Sdy, Sdx = data_4d.shape[2], data_4d.shape[3]
+    if Sdy == Sdx:
+        return data_4d
+    from scipy.ndimage import zoom as _zoom
+    sq = min(Sdy, Sdx)
+    out = _zoom(data_4d, [1.0, 1.0, sq / Sdy, sq / Sdx],
+                order=1).astype("float32")
+    print(f"  CBED resampled to square {sq}×{sq} (was {Sdy}×{Sdx})")
+    return out
 
 
 def _calibrate(datacube, r_pixel_size: float, q_pixel_size: float) -> None:
@@ -187,6 +199,8 @@ def reconstruct(p: P.Params, *, stage: str = "both",
     print("=" * 60)
 
     data_4d, sim_meta = load_and_stitch(tile_dir, p, tile_pairs)
+    # py4DSTEM needs square CBED; load_and_stitch() now returns native.
+    data_4d = _resample_cbed_to_square(data_4d)
 
     # Reciprocal pixel size in Å⁻¹ (NOT in mrad). dk = pix_mrad / (1000 · λ).
     # Prefer values written by the sim into the tile zarr over a fresh

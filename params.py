@@ -51,6 +51,15 @@ CENTER_X_A: float = 23.0
 CENTER_Y_A: float = 35.0
 N_TILES_TILED: int = 5        # tiles per side of the simulated grid (was 3)
 TILE_SIZE_A: float = 4.0      # one tile is TILE_SIZE_A × TILE_SIZE_A
+
+# Periodic-cell replication (W1 Phase C). The labyrinth is genuinely periodic
+# in X (sandwich axis, 12 PTO+STO layers) and Y (bread axis, 18 perovskite
+# UCs); replicating these adds box width without changing physics. Z is the
+# beam axis and looks down a polarisation vortex core — DO NOT tile Z.
+# Default (1,1) = no tiling. (2,1) is the cheapest cell-width bump for
+# overfocus headroom; (2,2) gives more lateral margin at ~4× sim cost.
+TILE_X: int = 1   # sandwich axis (drives overfocus headroom)
+TILE_Y: int = 1   # bread axis (lateral margin)
 SCAN_WIDTH_A: float = 40.0    # legacy nominal window; derive() now uses
                               # N_TILES_TILED·TILE_SIZE_A as the real window
 # Fraction of (effective) probe FWHM that successive scan positions overlap.
@@ -100,6 +109,9 @@ def load_atoms():
     atoms = ase.io.read(str(STRUCTURE_FILE))
     atoms.rotate(-90, "y", rotate_cell=True)
     atoms = abtem.orthogonalize_cell(atoms)
+    # Tile BEFORE center(axis=2) so the Z-vacuum padding survives the tile.
+    if TILE_X != 1 or TILE_Y != 1:
+        atoms = atoms * (TILE_X, TILE_Y, 1)
     atoms.center(axis=2, vacuum=2.0)
     return atoms
 
@@ -166,7 +178,8 @@ class Params:
     # axis after coarsening. Computed from the long-axis native pixel mrad.
     bf_bin: int
     bf_native_pixel_mrad: float
-    bf_eff_pixel_mrad: float
+    bf_eff_pixel_mrad: float        # coarser axis (X-direction CBED ≈ 6.17 mrad/px)
+    bf_eff_pixel_mrad_y: float      # finer axis (Y-direction CBED ≈ 4.22 mrad/px)
     bf_disk_diameter_px: int
     bf_df_radius_px: int
 
@@ -253,6 +266,9 @@ def derive(
     # Effective mrad/px and disk sizes quoted on the COARSER axis (X here).
     bf_native_pixel_mrad = float(max(pix_mrad_x, pix_mrad_y))  # coarser = X
     bf_eff_pixel_mrad = bf_native_pixel_mrad * bf_bin
+    # Per-axis effective mrad/px. fold_slice consumes both (no resample);
+    # py4DSTEM consumes only the coarser value after the square-resample.
+    bf_eff_pixel_mrad_y = float(min(pix_mrad_x, pix_mrad_y)) * bf_bin   # finer = Y
     bf_disk_diameter_px = int(round(2.0 * convergence_mrad / bf_eff_pixel_mrad))
     bf_df_radius_px = int(round((detector_max_angle_mrad - convergence_mrad)
                                 / bf_eff_pixel_mrad))
@@ -295,6 +311,7 @@ def derive(
         bf_bin=bf_bin,
         bf_native_pixel_mrad=bf_native_pixel_mrad,
         bf_eff_pixel_mrad=bf_eff_pixel_mrad,
+        bf_eff_pixel_mrad_y=bf_eff_pixel_mrad_y,
         bf_disk_diameter_px=bf_disk_diameter_px,
         bf_df_radius_px=bf_df_radius_px,
         recon_num_slices=recon_num_slices,

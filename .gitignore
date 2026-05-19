@@ -427,3 +427,37 @@ FodyWeavers.xsd
 *.msix
 *.msm
 *.msp
+
+# =============================================================================
+# PTO/STO project — large simulation & reconstruction artifacts
+# All re-generatable from params.py + tile data; never commit.
+# =============================================================================
+
+# Stitched/exported diffraction data
+*.h5
+*.hdf5
+
+# Zarr stores (tile sims, recon outputs)
+*.zarr/
+
+# fold_slice / PtychoShelves reconstruction outputs
+*.mat
+analysis/
+1/                                 # pipeline-mode HDF5 dest (data_roi*_dp.hdf5)
+foldslice_run/                     # alternative recon output dir
+
+# validate.py outputs (re-generate via `python validate.py --recon ...`)
+*_columns.csv
+validation_plots/*.png
+!validation_plots/.gitkeep         # if we ever want to track the dir itself
+
+# fold_slice intermediate image outputs (TIFFs are ~6 MB each — keep as record)
+# (no *.tiff ignore — we WANT these tracked)
+
+# Local diagnostic / test scripts
+_test_mex.bat
+
+# Compiled MEX kernels (re-built on first call via mexcuda)
+*.mexw64
+*.mexa64
+

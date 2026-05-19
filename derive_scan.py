@@ -19,13 +19,21 @@ import numpy as np
 
 import params as P
 
-# Placeholder box dims so we don't need abTEM / the POSCAR on disk. These match
-# params.py's __main__ fallback (47.88 x 70.01 x 73.93 A; beam = +Z).
-BOX_DIMS_A = (47.88, 70.01, 73.93)
+# Base (untiled) cell dimensions — 47.88 x 70.01 x 73.93 A, beam = +Z.
+# Kept as a constant so this script stays lightweight (no abTEM/POSCAR read).
+# Tiled dims = (BX*TILE_X, BY*TILE_Y, BZ) since TILE_Z is forbidden (vortex axis).
+_BASE_BOX_DIMS_A = (47.88, 70.01, 73.93)
+BOX_DIMS_A = (
+    _BASE_BOX_DIMS_A[0] * P.TILE_X,
+    _BASE_BOX_DIMS_A[1] * P.TILE_Y,
+    _BASE_BOX_DIMS_A[2],
+)
 
 # Mirrors params.py (kept here so the sweep below is self-contained).
 N_TILES_TILED = P.N_TILES_TILED   # 5 -> 5x5 tiles of TILE_SIZE_A -> ~20x20 A window
 TILE_SIZE_A = P.TILE_SIZE_A       # 4.0
+TILE_X = P.TILE_X
+TILE_Y = P.TILE_Y
 
 OVERFOCUS_NM_SWEEP = [1.0, 2.0, 5.0, 10.0]
 OVERLAP_SWEEP = [0.75, 0.85, 0.90, 0.95]
@@ -144,9 +152,13 @@ def main(argv=None) -> int:
     half_scan = scan_extent_a / 2.0
     print()
     print("Probe-vs-cell clearance  (overfocused: probe widest at the EXIT surface)")
-    print(f"  cell (x×y) = {bx:.1f} × {by:.1f} Å ; thickness t = {t:.1f} Å ; "
+    print(f"  TILE_X={TILE_X}, TILE_Y={TILE_Y}  =>  "
+          f"cell (x×y) = {bx:.1f} × {by:.1f} Å ; thickness t = {t:.1f} Å ; "
           f"scan centred at ({cx:.1f}, {cy:.1f}) Å ; scan box = "
           f"[{cx-half_scan:.1f},{cx+half_scan:.1f}] × [{cy-half_scan:.1f},{cy+half_scan:.1f}] Å")
+    if (TILE_X != 1 or TILE_Y != 1) and (cx > bx or cy > by):
+        print(f"  [note] scan centre ({cx:.1f},{cy:.1f}) is OUTSIDE the tiled cell "
+              f"({bx:.1f}×{by:.1f}) — update CENTER_X_A / CENTER_Y_A to a tiled mid-cell")
     ghdr = (f"  {'ovf nm':>6} | {'probeØ in':>10} {'probeØ out':>11} | "
             f"{'reach@out':>10} | {'x-overhang':>11} | {'%of probeØ':>11} | verdict")
     print(ghdr)

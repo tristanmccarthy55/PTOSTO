@@ -1,0 +1,17 @@
+{
+  "num_slices": 74,
+  "slice_thickness_a": 0.9991171069485758,
+  "real_space_thickness_a": 73.93466591419461,
+  "scan_step_a": 0.25007210206599695,
+  "reconstruction_pixel_size_a": 0.0,
+  "bf_bin": 15,
+  "bf_eff_pixel_mrad": 6.167202408564567,
+  "bf_eff_pixel_mrad_y": 4.218260688128757,
+  "overfocus_a": 50.0,
+  "polar_C10": 50.0,
+  "energy_ev": 300000.0,
+  "convergence_mrad": 100.0,
+  "engine": "fold_slice_LSQML",
+  "source_mat": "c:\\Users\\Trist\\HyperSpy-bundle\\MY HYPERSPY CODE\\PTOSTO\\analysis\\S00000-00999\\S00001\\S00001_65x65_b0_MLs_L1_p1_g32_pc2_noModel_vp1_Ns37_dz1.9981_recons.mat",
+  "mat_axis_order": "yxz"
+}
