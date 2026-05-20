@@ -21,10 +21,12 @@ import params as P
 
 # Base (untiled) cell dimensions — 47.88 x 70.01 x 73.93 A, beam = +Z.
 # Kept as a constant so this script stays lightweight (no abTEM/POSCAR read).
-# Tiled dims = (BX*TILE_X, BY*TILE_Y, BZ) since TILE_Z is forbidden (vortex axis).
+# Final box = (STO_X_PAD widening) -> TILE_X -> TILE_Y. TILE_Z is forbidden.
 _BASE_BOX_DIMS_A = (47.88, 70.01, 73.93)
+_A_PTO = _BASE_BOX_DIMS_A[0] / 12.0   # POSCAR is 12 perovskite UCs along X
+_PADDED_BX = _BASE_BOX_DIMS_A[0] + 2.0 * P.STO_X_PAD_UC * _A_PTO
 BOX_DIMS_A = (
-    _BASE_BOX_DIMS_A[0] * P.TILE_X,
+    _PADDED_BX * P.TILE_X,
     _BASE_BOX_DIMS_A[1] * P.TILE_Y,
     _BASE_BOX_DIMS_A[2],
 )
@@ -160,7 +162,7 @@ def main(argv=None) -> int:
         print(f"  [note] scan centre ({cx:.1f},{cy:.1f}) is OUTSIDE the tiled cell "
               f"({bx:.1f}×{by:.1f}) — update CENTER_X_A / CENTER_Y_A to a tiled mid-cell")
     ghdr = (f"  {'ovf nm':>6} | {'probeØ in':>10} {'probeØ out':>11} | "
-            f"{'reach@out':>10} | {'x-overhang':>11} | {'%of probeØ':>11} | verdict")
+            f"{'reach@out':>10} | {'overhang(ax)':>13} | {'%of probeØ':>11} | verdict")
     print(ghdr)
     print("  " + "-" * (len(ghdr) - 2))
     for ovf_nm in OVERFOCUS_NM_SWEEP + [15.0, 20.0]:
@@ -169,24 +171,28 @@ def main(argv=None) -> int:
         r_out = alpha_rad * (df_a + t)             # exit probe radius (worst case)
         reach = half_scan + r_out                  # worst-case lateral reach from centre
         x_lo, x_hi = cx - reach, cx + reach
-        overhang = max(0.0, 0.0 - x_lo, x_hi - bx)  # how far the probe edge pokes past the cell
+        y_lo, y_hi = cy - reach, cy + reach
+        x_over = max(0.0, 0.0 - x_lo, x_hi - bx)
+        y_over = max(0.0, 0.0 - y_lo, y_hi - by)
+        overhang = max(x_over, y_over)
+        bound_axis = 'y' if y_over >= x_over else 'x'
         frac = overhang / max(2 * r_out, 1e-9)      # as a fraction of the probe diameter
         verdict = ("OK — fits" if overhang <= 0.0 else
                    "OK — soft tail clipped" if frac < 0.10 else
                    "MARGINAL — aliasing likely" if frac < 0.25 else
                    "UNSAFE — probe wraps")
         print(f"  {ovf_nm:>6.1f} | {2*r_in:>9.1f}Å {2*r_out:>10.1f}Å | "
-              f"{reach:>9.1f}Å | {overhang:>10.1f}Å | {frac*100:>10.0f}% | {verdict}")
+              f"{reach:>9.1f}Å | {overhang:>9.1f}Å ({bound_axis}) | {frac*100:>10.0f}% | {verdict}")
     print("  Reading it: 'reach' = worst-case (scan-corner) lateral distance from "
-          "the scan centre to the probe edge at the EXIT surface; 'x-overhang' = "
-          "how far that pokes past the periodic cell's short (x≈48 Å) axis. A few "
-          "% of the probe diameter is a low-amplitude tail (tolerable); >~25% means "
-          "real aliasing/wraparound. Note the EXIT probe radius α·(Δf+t) has a "
-          "fixed α·t ≈ 7.4 Å piece from the 74 Å thickness ALONE — that plus half "
-          "the scan extent is the floor; overfocus only adds to it. To go to the "
-          "paper's ~20 nm you'd need a wider abTEM cell (lateral vacuum padding → "
-          "~(W/48)² slower FFT + free in-plane surfaces near the scan edges) or a "
-          "smaller scan window (5×5 or 4×4 tiles).")
+          "the scan centre to the probe edge at the EXIT surface; 'overhang' = "
+          "how far that pokes past the periodic cell along whichever axis (x or "
+          "y) is binding — the tag in parens names the offender. A few % of the "
+          "probe diameter is a low-amplitude tail (tolerable); >~25% means real "
+          "aliasing/wraparound. The EXIT probe radius α·(Δf+t) has a fixed α·t "
+          "≈ 7.4 Å piece from the 74 Å thickness ALONE — that plus half the scan "
+          "extent is the floor; overfocus only adds to it. At α=100 mrad the "
+          "untiled 48×70 Å cell wraps even at 5 nm overfocus on the Y axis; "
+          "Phase C tiles to (2,2) (96×140 Å) to clear 20 nm comfortably.")
 
     print()
     print("Guidance: pick the (overfocus, overlap) with paper-like position count "

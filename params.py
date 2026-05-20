@@ -21,13 +21,16 @@ import numpy as np
 # ---------------------------------------------------------------------------
 ENERGY_EV: float = 300e3
 CONVERGENCE_MRAD: float = 100.0
-# Positive = probe focused before sample (overfocus). Bumped 1.0 -> 5.0 nm
-# (W2): a wider probe spreads over many unit cells => much more overlap
-# diversity => a better-conditioned ptychographic inversion (handover §6.3).
-# 5 nm => geometric spread α·Δf = 0.1·50 Å = 5 Å effective probe (vs ~1 Å
-# before). NOT focusing inside the sample (would kill lateral overlap — hard
-# user constraint). Picked via derive_scan.py against the paper's recipe.
-OVERFOCUS_NM: float = 5.0
+# Positive = probe focused before sample (overfocus). W1 Phase C: 5.0 -> 20.0 nm.
+# The W1 fold_slice port at 5 nm overfocus hit kz-FRC 0.087 — ~13000x better than
+# py4DSTEM on the same data but still under-determined (LABBOOK § 12). 20 nm
+# overfocus matches the Lei & Wang paper recipe: geometric spread α·Δf = 0.1·200
+# Å = 20 Å effective probe footprint (vs ~5 Å before), so each object pixel sees
+# ~16× more scan positions => much better conditioning. Requires TILE_X=TILE_Y=2
+# below — at α=100 mrad the probe reach α·(Δf+t) ≈ 27 Å plus half_scan would wrap
+# around the original 48×70 Å cell. Still POSITIVE (focused above the sample);
+# focusing inside the sample is a hard user constraint.
+OVERFOCUS_NM: float = 20.0
 
 HAADF_INNER_MRAD: float = 110.0
 # 185 mrad is safely within the ~197 mrad simulated angular range (grid-limited
@@ -40,37 +43,56 @@ DETECTOR_MAX_ANGLE_MRAD: float = 200.0
 DETECTOR_TARGET_PIXELS: int = 64
 
 # Scan: the simulated/stitched region is an N_TILES_TILED × N_TILES_TILED grid
-# of TILE_SIZE_A tiles, centred on (CENTER_X_A, CENTER_Y_A). Bumped from a
-# hard-coded 3×3 (12×12 Å) to 5×5 (20×20 Å) (W2): more positions over a bigger
-# area ⇒ depth structure constrained rather than regularised flat (handover
-# §6.2); ~26×26 Å is what the reference paper used. 5×5 (not 6×6) so the
-# defocused probe — widest at the EXIT surface, radius α·(Δf+t) — still fits
-# inside the periodic abTEM cell (short axis x ≈ 48 Å) at the worst-case scan
-# corner; see the clearance table in derive_scan.py.
-CENTER_X_A: float = 23.0
-CENTER_Y_A: float = 35.0
+# of TILE_SIZE_A tiles, centred on (CENTER_X_A, CENTER_Y_A). 5×5 (20×20 Å) since
+# W2 (~26×26 Å is what the reference paper used). W1 Phase C: scan placed on
+# the LOWER of the two polarisation vortex cores in the POSCAR (the upper one
+# at ~28,50 and the lower at ~23,22 per GroundTruth.ipynb streamlines). After
+# STO_X_PAD_UC=5 perovskite UCs of pure STO are added on each X-edge, the
+# lower vortex sits at x = 5·3.99 + 23 = 42.95 Å in the padded cell
+# (87.78 × 70.01 Å untiled). TILE_Y=2 → 87.78 × 140.02 Å; the scan goes on the
+# upper Y-replica at (42.95, 22+70.01 = 92.01) because the y=22 copy hard
+# against the y=0 edge would alias. Clearance at 20 nm overfocus + 5×5 × 4 Å
+# scan: probe reach 37.4 Å; X-margins (42.95, 44.83), Y-margins (92.01,
+# 48.01) — all positive, tightest = +5.55 Å on the left X-edge. Slightly
+# better headroom than scanning the upper vortex (+2.4 Å) because x=23 is
+# more centred in the padded cell than x=28.
+CENTER_X_A: float = 42.95
+CENTER_Y_A: float = 92.01
 N_TILES_TILED: int = 5        # tiles per side of the simulated grid (was 3)
 TILE_SIZE_A: float = 4.0      # one tile is TILE_SIZE_A × TILE_SIZE_A
 
-# Periodic-cell replication (W1 Phase C). The labyrinth is genuinely periodic
-# in X (sandwich axis, 12 PTO+STO layers) and Y (bread axis, 18 perovskite
-# UCs); replicating these adds box width without changing physics. Z is the
-# beam axis and looks down a polarisation vortex core — DO NOT tile Z.
-# Default (1,1) = no tiling. (2,1) is the cheapest cell-width bump for
-# overfocus headroom; (2,2) gives more lateral margin at ~4× sim cost.
-TILE_X: int = 1   # sandwich axis (drives overfocus headroom)
-TILE_Y: int = 1   # bread axis (lateral margin)
+# Cell replication (W1 Phase C). The labyrinth is periodic in X (PTO/STO
+# sandwich, 12 perovskite UCs; X-edges are pure STO) and Y (in-plane
+# "footlong", 18 perovskite UCs). Z is the beam axis and looks down a
+# polarisation vortex core — DO NOT tile Z.
+# Phase C strategy: X is widened by asymmetric padding with pure STO on each
+# edge (see STO_X_PAD_UC below and load_atoms), NOT by full-cell tiling. The
+# X-edges of the natural cell are already STO (Sr-only at x=0..15 and x=37..48
+# per Phase 0 load_atoms verification), so adding more STO on each side
+# preserves the periodic wrap (STO→STO, polarisation = 0 on both sides).
+# This is ~35% cheaper FFT than a full TILE_X=3 because the pad atoms are
+# pure perovskite (no labyrinth modulation to replicate). Y is straight-tiled
+# (TILE_Y=2) because the y≈50 vortex is too close to the y=70.01 top edge of
+# the untiled cell to give the probe its 37.4 Å clearance.
+TILE_X: int = 1   # X widened via STO padding (see STO_X_PAD_UC); no cell tiling
+TILE_Y: int = 2   # footlong axis straight tiling
+
+# Perovskite-UC pad of pure STO added on each X-edge of the POSCAR before any
+# tiling. 0 = disabled (use plain TILE_X-only tiling instead). 5 UCs each side
+# → 87.78 Å total X (vs 95.77 Å of TILE_X=2 or 143.64 Å of TILE_X=3) with
+# clearance margin +2.4 Å on the right X-edge at 20 nm overfocus + 5×5 × 4 Å
+# scan. The pad UC is extracted from the leftmost UC of the POSCAR (which
+# sits in the natural STO_3 flank — see load_atoms below).
+STO_X_PAD_UC: int = 5
 SCAN_WIDTH_A: float = 40.0    # legacy nominal window; derive() now uses
                               # N_TILES_TILED·TILE_SIZE_A as the real window
 # Fraction of (effective) probe FWHM that successive scan positions overlap.
-# Bumped 0.75 -> 0.95 (W2): the bigger overfocus inflates the effective FWHM,
-# so at 0.75 the derived step (= (1-overlap)·FWHM) would coarsen to several Å
-# and the position count would collapse. 0.95 here ⇒ ≈0.25 Å step, ~97.5%
-# realized linear overlap, ≈256 pos/tile ⇒ ≈6400 positions over 5×5 tiles
-# (> the reference paper's ~4096) — the dataset we want for the fold_slice/
-# PtychoShelves recon. ~6 h sim. Drop to 0.90 (≈0.5 Å step, ≈1600 positions,
-# ~4× faster) for a quick diagnostic.
-TARGET_OVERLAP: float = 0.95
+# W1 Phase C: 0.95 -> 0.99 to drive scan density up alongside the wider probe.
+# At 20 nm overfocus FWHM_eff ≈ 20 Å, so step = (1-0.99)·20 = 0.20 Å => 400
+# pos/tile × 25 tiles = 10000 positions, realized linear overlap ≈ 99.5 %.
+# Each object pixel is constrained by ~16× more positions than the W1 6400-pos
+# / 5 nm baseline. Sim ~15-18 h, recon ~6-8 h.
+TARGET_OVERLAP: float = 0.99
 
 # Multislice simulation slice thickness. Existing 0.31 Å is over-fine; 1.0 Å
 # is sufficient at 100 mrad and gives a ~3× speedup.
@@ -102,13 +124,49 @@ STRUCTURE_FILE: Path = PROJECT_ROOT / "PTO6_STO6_18_18_labyrinthPoscar.vasp"
 # ---------------------------------------------------------------------------
 def load_atoms():
     """Read POSCAR, rotate so the original Z is the long in-plane axis,
-    orthogonalize, centre with vacuum on the beam axis. Returns an ASE Atoms.
+    orthogonalize, apply STO X-pad + TILE_X/TILE_Y replication, then centre
+    with vacuum on the beam axis. Returns an ASE Atoms.
+
+    When STO_X_PAD_UC > 0 the cell is widened in X by adding `STO_X_PAD_UC`
+    perovskite unit cells of pure STO on each X-edge. The pad UC is extracted
+    from the leftmost UC of the POSCAR (which sits in the natural STO_3 flank,
+    verified via Phase 0 load_atoms output: Pb concentrated at x=15..37, Sr
+    only at x<15 and x>37). The result is [STO pad | POSCAR | STO pad] in X
+    with continuous lattice (3.99 Å perovskite period) and STO→STO periodic
+    wrap on the X-axis. TILE_X tiling is then applied on top of the padded
+    cell (typically TILE_X=1 when padding handles the X-widening).
     """
     import ase.io
     import abtem
     atoms = ase.io.read(str(STRUCTURE_FILE))
     atoms.rotate(-90, "y", rotate_cell=True)
     atoms = abtem.orthogonalize_cell(atoms)
+
+    # Asymmetric STO padding in X (W1 Phase C).
+    if STO_X_PAD_UC > 0:
+        bx, by, bz = atoms.cell.lengths()
+        a_pto = bx / 12.0   # POSCAR is PTO6/STO6 = 12 perovskite UCs along X
+        # Extract one UC of pure STO from the left X-edge of the POSCAR.
+        sto_uc_mask = atoms.positions[:, 0] < a_pto
+        sto_uc = atoms[sto_uc_mask].copy()
+        sto_uc.set_cell([a_pto, by, bz])
+        sto_uc.pbc = [True, True, True]
+        # Build the left pad by replicating the UC; right pad is a copy.
+        sto_pad_left = sto_uc * (STO_X_PAD_UC, 1, 1)
+        sto_pad_right = sto_pad_left.copy()
+        # Shift the POSCAR right past the left pad.
+        atoms_shifted = atoms.copy()
+        atoms_shifted.translate([STO_X_PAD_UC * a_pto, 0.0, 0.0])
+        # Shift the right pad past the POSCAR.
+        sto_pad_right.translate([STO_X_PAD_UC * a_pto + bx, 0.0, 0.0])
+        # Combine: [left_pad] + [original] + [right_pad].
+        atoms = sto_pad_left + atoms_shifted + sto_pad_right
+        new_bx = 2.0 * STO_X_PAD_UC * a_pto + bx
+        # set_cell with scale_atoms=False (default) preserves atom positions
+        # — we only resize the cell vectors.
+        atoms.set_cell([new_bx, by, bz])
+        atoms.pbc = [True, True, True]
+
     # Tile BEFORE center(axis=2) so the Z-vacuum padding survives the tile.
     if TILE_X != 1 or TILE_Y != 1:
         atoms = atoms * (TILE_X, TILE_Y, 1)
